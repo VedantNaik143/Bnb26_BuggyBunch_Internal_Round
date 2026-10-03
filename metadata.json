@@ -1,0 +1,6 @@
+{
+  "name": "Roundtable — Distributed Live Captions",
+  "description": "Distributed acoustic evidence fusion for live multi-device group conversations. One conversation. Many microphones. One clear caption stream.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
