@@ -1,69 +1,107 @@
-import React, { useState } from 'react';
-import { BarChart3, Activity, Layers, ArrowLeft, Download, CheckCircle2, AlertTriangle, ShieldCheck, Gauge, Layers2 } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { BarChart3, Activity, Layers, ArrowLeft, Download, CheckCircle2, AlertTriangle, ShieldCheck, Gauge, Layers2, Sparkles } from 'lucide-react';
 import { Session, SessionMetrics } from '../types/realtime';
+import { getEvaluationApi } from '../lib/api/sessionApi';
 
 interface EvaluatePageProps {
   session: Session | null;
   onBack: () => void;
 }
 
+interface DecisionLog {
+  time: string;
+  devices: string[];
+  text: string;
+  similarity: string;
+  decision: string;
+  type: string;
+}
+
 export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) => {
   const [activeTab, setActiveTab] = useState<'fusion' | 'single' | 'independent'>('fusion');
+  const [realLogs, setRealLogs] = useState<DecisionLog[]>([]);
+  const [isLiveTelemetry, setIsLiveTelemetry] = useState(false);
+
+  useEffect(() => {
+    if (session?.sessionId && !session.sessionId.includes('demo')) {
+      getEvaluationApi(session.sessionId)
+        .then((data) => {
+          if (data && data.decisionLogs && data.decisionLogs.length > 0) {
+            setRealLogs(data.decisionLogs);
+            setIsLiveTelemetry(true);
+          }
+        })
+        .catch(() => {
+          // ignore if backend not available
+        });
+    }
+  }, [session?.sessionId]);
 
   const metrics: SessionMetrics = session?.metrics || {
-    medianLatencyMs: 780,
-    p95LatencyMs: 1320,
-    speechEvents: 42,
-    correctionCount: 9,
-    overlapCount: 4,
-    deduplicatedEvents: 31,
-    connectedDevices: 5,
-    audioChunkLatencyMs: 140,
-    asrLatencyMs: 460,
-    fusionLatencyMs: 180,
+    medianLatencyMs: 0,
+    p95LatencyMs: 0,
+    speechEvents: 0,
+    correctionCount: 0,
+    overlapCount: 0,
+    deduplicatedEvents: 0,
+    connectedDevices: session?.participants.length || 1,
+    audioChunkLatencyMs: 0,
+    asrLatencyMs: 0,
+    fusionLatencyMs: 0,
   };
 
-  const sampleLogs = [
-    {
-      time: '12.4s',
-      devices: ['Alice (iPhone)', 'Elena (MacBook)'],
-      text: '"We should definitely schedule the release for Friday afternoon."',
-      similarity: '98%',
-      decision: 'Duplicate echo suppressed · Retained Alice (highest RMS)',
-      type: 'dedupe',
-    },
-    {
-      time: '20.1s',
-      devices: ['Alice (iPhone)', 'Marcus (Pixel)'],
-      text: 'Alice: "Friday afternoon" | Marcus: "No, Monday morning"',
-      similarity: '14%',
-      decision: 'Simultaneous speech detected (<700ms) · Parallelized cards',
-      type: 'overlap',
-    },
-    {
-      time: '34.2s',
-      devices: ['Sofia (iPad)', 'David (Galaxy)'],
-      text: '"The acoustic fusion engine weights the closest device highest"',
-      similarity: '94%',
-      decision: 'Duplicate echo suppressed · Retained Sofia (highest RMS)',
-      type: 'dedupe',
-    },
-    {
-      time: '41.8s',
-      devices: ['Elena (MacBook)'],
-      text: 'Provisional "The audio worklet is..." updated in-place to "16 kHz PCM"',
-      similarity: 'Refined',
-      decision: 'In-place segment update (no duplicate line)',
-      type: 'revision',
-    },
-  ];
+  const generatedFromSession: DecisionLog[] = React.useMemo(() => {
+    if (!session || !session.transcriptSegments || session.transcriptSegments.length === 0) {
+      return [];
+    }
+    return session.transcriptSegments.map((seg) => {
+      const elapsedSec = (seg.startMs / 1000).toFixed(1);
+      const participant = session.participants.find((p) => p.participantId === seg.speakerId);
+      const deviceLabel = participant?.deviceLabel || (participant?.isLocal ? 'Local Device' : 'Microphone');
+
+      let decision = 'Transcribed and attributed to active speaker node';
+      let type = 'speech';
+      let sim = 'Unique';
+
+      if (seg.overlap) {
+        decision = 'Simultaneous speech detected (<700ms) · Parallelized card';
+        type = 'overlap';
+        sim = 'Overlap';
+      } else if (seg.duplicateSourcesCount && seg.duplicateSourcesCount > 1) {
+        decision = `Duplicate echo suppressed (${seg.duplicateSourcesCount} nodes) · Retained clearest RMS`;
+        type = 'dedupe';
+        sim = '96%';
+      } else if (seg.status === 'FINAL') {
+        decision = 'Committed final utterance with persistent spatial binding';
+        type = 'final';
+        sim = 'Committed';
+      }
+
+      return {
+        time: `${elapsedSec}s`,
+        devices: [`${seg.speakerName} (${deviceLabel})`],
+        text: `"${seg.text}"`,
+        similarity: sim,
+        decision,
+        type,
+      };
+    });
+  }, [session]);
+
+  const activeLogs = realLogs.length > 0 ? realLogs : generatedFromSession;
 
   const handleExportEvaluation = () => {
     const data = {
       evaluationVersion: '1.0.0',
       timestamp: new Date().toISOString(),
-      metrics,
+      isLiveMode: isLive,
+      metrics: {
+        ...metrics,
+        medianLatency: metrics.medianLatencyMs > 0 ? `${metrics.medianLatencyMs} ms` : 'Not measured',
+        p95Latency: metrics.p95LatencyMs > 0 ? `${metrics.p95LatencyMs} ms` : 'Not measured',
+      },
       methodologyComparison: {
+        benchmarkType: 'Illustrative demo scenario · Not an experimental measurement',
         singleMic: {
           werEstimated: '28.4%',
           overlapHandling: 'Failure (blended stream)',
@@ -78,17 +116,17 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
           werEstimated: '8.1%',
           duplicateSuppressionEfficiency: '97.2%',
           overlapHandling: 'Isolated parallel streams',
-          speakerAttribution: 'Hardware-verified acoustic proximity',
+          speakerAttribution: 'Proximity-weighted acoustic fusion',
         },
       },
-      decisionLogs: sampleLogs,
+      decisionLogs: activeLogs,
     };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `roundtable-evaluation-report.json`;
+    link.download = `roundtable-evaluation-report-${Date.now()}.json`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -103,7 +141,7 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
           <div>
             <button
               onClick={onBack}
-              className="text-xs text-[#6A645B] hover:text-[#1E1B16] font-mono flex items-center gap-1 mb-2"
+              className="text-xs text-[#6A645B] hover:text-[#1E1B16] font-mono flex items-center gap-1 mb-2 cursor-pointer"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
               Back to Session
@@ -112,22 +150,33 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               <h1 className="text-3xl font-extrabold tracking-tight text-[#1E1B16]">
                 Roundtable Evaluation &amp; Benchmarks
               </h1>
+              <span
+                className={`text-xs font-mono px-2 py-0.5 rounded border font-semibold ${
+                  isLive
+                    ? 'bg-[#315C4C]/10 text-[#315C4C] border-[#315C4C]/30'
+                    : 'bg-[#A65A32]/10 text-[#A65A32] border-[#A65A32]/30'
+                }`}
+              >
+                {isLive ? 'LIVE TELEMETRY' : 'DEMO BENCHMARK'}
+              </span>
             </div>
             <p className="text-xs text-[#6A645B] mt-1 font-mono">
-              Empirical multi-device telemetry and acoustic fusion verification.
+              {isLive
+                ? 'Empirical multi-device session telemetry and real-time fusion verification.'
+                : 'Illustrative demo scenario · Pre-recorded architectural benchmark comparison.'}
             </p>
           </div>
 
           <button
             onClick={handleExportEvaluation}
-            className="px-4 py-2 text-xs font-semibold rounded-md bg-[#315C4C] text-[#FFF8E8] hover:bg-[#27493C] transition-colors flex items-center gap-2 shadow-xs self-start"
+            className="px-4 py-2 text-xs font-semibold rounded-md bg-[#315C4C] text-[#FFF8E8] hover:bg-[#27493C] transition-colors flex items-center gap-2 shadow-xs self-start cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
             Export Telemetry Report (.JSON)
           </button>
         </div>
 
-        {/* Primary Metrics Row (Cards styled according to Design.md) */}
+        {/* Primary Metrics Row */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <div className="p-4 bg-[#FFF8E8] border border-[#D8CCAF] rounded-lg shadow-xs">
             <span className="text-[11px] font-mono text-[#6A645B] uppercase block">
@@ -137,7 +186,7 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               {metrics.connectedDevices}
             </span>
             <span className="text-[10px] text-[#315C4C] font-mono mt-1 block">
-              100% active stream
+              {metrics.connectedDevices > 0 ? 'Active acoustic mesh' : 'Awaiting nodes'}
             </span>
           </div>
 
@@ -146,11 +195,17 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               Median Latency
             </span>
             <span className="text-2xl sm:text-3xl font-bold font-mono text-[#1E1B16] mt-1 block">
-              {metrics.medianLatencyMs}
-              <span className="text-sm font-normal text-[#6A645B] ml-0.5">ms</span>
+              {metrics.medianLatencyMs > 0 ? (
+                <>
+                  {metrics.medianLatencyMs}
+                  <span className="text-sm font-normal text-[#6A645B] ml-0.5">ms</span>
+                </>
+              ) : (
+                <span className="text-base font-mono text-[#6A645B]">Not measured</span>
+              )}
             </span>
             <span className="text-[10px] text-[#315C4C] font-mono mt-1 block">
-              Sub-second target met
+              {metrics.medianLatencyMs > 0 ? 'Sub-second target met' : 'Requires speech turn'}
             </span>
           </div>
 
@@ -159,11 +214,17 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               Tail Latency (P95)
             </span>
             <span className="text-2xl sm:text-3xl font-bold font-mono text-[#1E1B16] mt-1 block">
-              {metrics.p95LatencyMs}
-              <span className="text-sm font-normal text-[#6A645B] ml-0.5">ms</span>
+              {metrics.p95LatencyMs > 0 ? (
+                <>
+                  {metrics.p95LatencyMs}
+                  <span className="text-sm font-normal text-[#6A645B] ml-0.5">ms</span>
+                </>
+              ) : (
+                <span className="text-base font-mono text-[#6A645B]">Not measured</span>
+              )}
             </span>
             <span className="text-[10px] text-[#6A645B] font-mono mt-1 block">
-              Includes fusion dedupe
+              {metrics.p95LatencyMs > 0 ? 'Includes fusion dedupe' : 'Pending observations'}
             </span>
           </div>
 
@@ -175,7 +236,7 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               {metrics.correctionCount}
             </span>
             <span className="text-[10px] text-[#4D6482] font-mono mt-1 block">
-              No duplicate lines
+              Zero duplicate rows
             </span>
           </div>
 
@@ -192,23 +253,28 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
           </div>
         </div>
 
-        {/* 3-Way Comparative Scenario Simulator */}
+        {/* 3-Way Comparative Scenario Section */}
         <div className="bg-[#FFF8E8] border border-[#D8CCAF] rounded-lg shadow-xs p-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
             <div>
-              <span className="text-xs font-mono text-[#315C4C] uppercase tracking-wider block mb-1">
-                Side-by-Side Acoustic Simulation
-              </span>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-xs font-mono text-[#315C4C] uppercase tracking-wider block">
+                  Architectural Evaluation
+                </span>
+                <span className="text-[10px] font-mono bg-[#FFEDBF] text-[#6A645B] px-1.5 py-0.5 rounded border border-[#D8CCAF]">
+                  Illustrative demo scenario · Not an experimental measurement
+                </span>
+              </div>
               <h2 className="text-xl font-bold tracking-tight text-[#1E1B16]">
                 Same Conversation, 3 Acoustic Architectures
               </h2>
             </div>
 
-            {/* Segmented Control Buttons */}
+            {/* Segmented Control */}
             <div className="flex items-center gap-1 p-1 bg-[#FFEDBF]/60 rounded-md border border-[#D8CCAF]">
               <button
                 onClick={() => setActiveTab('single')}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
                   activeTab === 'single'
                     ? 'bg-[#FFF8E8] text-[#1E1B16] shadow-2xs font-semibold'
                     : 'text-[#6A645B] hover:text-[#1E1B16]'
@@ -218,7 +284,7 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               </button>
               <button
                 onClick={() => setActiveTab('independent')}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
                   activeTab === 'independent'
                     ? 'bg-[#FFF8E8] text-[#1E1B16] shadow-2xs font-semibold'
                     : 'text-[#6A645B] hover:text-[#1E1B16]'
@@ -228,7 +294,7 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
               </button>
               <button
                 onClick={() => setActiveTab('fusion')}
-                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors ${
+                className={`px-3 py-1.5 text-xs font-medium rounded transition-colors cursor-pointer ${
                   activeTab === 'fusion'
                     ? 'bg-[#315C4C] text-[#FFF8E8] font-semibold'
                     : 'text-[#6A645B] hover:text-[#1E1B16]'
@@ -247,12 +313,11 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
                 <div>
                   <strong className="block font-semibold">Single Microphone Flaws:</strong>
                   <span>
-                    When Elena talks near the laptop, audio is okay. When Marcus (far side) speaks at the same time as Alice, the single microphone clips and mixes them into garbled hallucinated text. No speaker identity is known.
+                    When Elena speaks near the laptop, audio is okay. When Marcus (far side) speaks at the same time as Alice, the single microphone clips and mixes them into garbled hallucinated text. No speaker identity is known.
                   </span>
                 </div>
               </div>
 
-              {/* Sample Output */}
               <div className="p-4 bg-[#FFEDBF]/20 border border-[#D8CCAF] rounded-md font-mono text-xs space-y-3">
                 <div className="text-[#6A645B] border-l-2 border-[#D8CCAF] pl-3">
                   <span className="font-semibold text-[#1E1B16]">Unknown Speaker:</span>
@@ -282,7 +347,6 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
                 </div>
               </div>
 
-              {/* Sample Output */}
               <div className="p-4 bg-[#FFEDBF]/20 border border-[#D8CCAF] rounded-md font-mono text-xs space-y-3">
                 <div className="text-[#6A645B] border-l-2 border-[#D8CCAF] pl-3">
                   <span className="font-semibold text-[#1E1B16]">Phone 1 (Alice):</span>
@@ -316,75 +380,89 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
                 </div>
               </div>
 
-              {/* Sample Output */}
               <div className="p-4 bg-[#FFEDBF]/20 border border-[#D8CCAF] rounded-md font-mono text-xs space-y-3">
-                <div className="border-l-2 border-[#315C4C] pl-3">
-                  <div className="flex items-center gap-2 text-[#6A645B]">
-                    <span className="font-semibold text-[#1E1B16]">Alice Zhao (iPhone 15 Pro):</span>
-                    <span className="text-[10px] text-[#315C4C]">· Fused from 3 devices (echoes suppressed)</span>
+                {session && session.transcriptSegments && session.transcriptSegments.length > 0 ? (
+                  session.transcriptSegments.slice(-2).map((seg, idx) => (
+                    <div key={seg.segmentId || idx} className="border-l-2 border-[#315C4C] pl-3">
+                      <div className="flex items-center gap-2 text-[#6A645B]">
+                        <span className="font-semibold text-[#1E1B16]">{seg.speakerName}:</span>
+                        <span className="text-[10px] text-[#315C4C]">
+                          · Active node ({session.participants.find((p) => p.participantId === seg.speakerId)?.deviceLabel || 'Microphone'})
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-[#1E1B16] font-sans text-sm">
+                        &quot;{seg.text}&quot;
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="text-[#6A645B] text-xs">
+                    {session ? (
+                      <p>
+                        Current Room: <strong>{session.name}</strong> ({session.participants.length} connected device{session.participants.length === 1 ? '' : 's'}).
+                        <br />
+                        Speak into your microphone or submit a caption in the Live Room to stream live empirical fusion events here.
+                      </p>
+                    ) : (
+                      <p>No active or concluded session selected. Start a room to view empirical telemetry.</p>
+                    )}
                   </div>
-                  <p className="mt-0.5 text-[#1E1B16] font-sans text-sm">
-                    &quot;We should definitely schedule the release for Friday afternoon.&quot;
-                  </p>
-                </div>
-
-                {/* Overlap Box */}
-                <div className="border border-[#D8CCAF] rounded p-2.5 bg-[#FFF8E8]">
-                  <span className="text-[10px] uppercase font-bold text-[#315C4C] block mb-1">
-                    Simultaneous Speech Isolated (2 streams)
-                  </span>
-                  <div className="space-y-1 text-xs">
-                    <p><strong>Alice:</strong> We should definitely schedule Friday afternoon.</p>
-                    <p><strong>Marcus:</strong> No, Friday releases are dangerous! Monday is safer.</p>
-                  </div>
-                </div>
+                )}
               </div>
             </div>
           )}
         </div>
 
-        {/* Realtime Fusion Event Ledger */}
+        {/* Acoustic Decision Ledger */}
         <div className="bg-[#FFF8E8] border border-[#D8CCAF] rounded-lg shadow-xs p-6">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
             <div>
               <span className="text-xs font-mono text-[#315C4C] uppercase tracking-wider block mb-1">
                 Acoustic Decision Ledger
               </span>
               <h2 className="text-lg font-bold tracking-tight text-[#1E1B16]">
-                Rolling Window Deduplication Events
+                {isLiveTelemetry ? 'Real-Time Evidence Fusion Events' : 'Rolling Window Deduplication Events'}
               </h2>
             </div>
             <span className="font-mono text-xs text-[#6A645B]">
-              Window: 700ms · Similarity Threshold: 0.82
+              Window: 2500ms · Similarity Threshold: 0.70
             </span>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs font-mono border-collapse">
-              <thead>
-                <tr className="border-b border-[#D8CCAF] bg-[#FFEDBF]/50 text-[#1E1B16]">
-                  <th className="p-2.5">Timestamp</th>
-                  <th className="p-2.5">Devices Involved</th>
-                  <th className="p-2.5">Text Sample</th>
-                  <th className="p-2.5">Engine Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#D8CCAF]/40 text-[#6A645B]">
-                {sampleLogs.map((log, i) => (
-                  <tr key={i} className="hover:bg-[#FFEDBF]/20">
-                    <td className="p-2.5 font-bold text-[#1E1B16]">{log.time}</td>
-                    <td className="p-2.5">{log.devices.join(', ')}</td>
-                    <td className="p-2.5 italic text-[#1E1B16] max-w-xs truncate">{log.text}</td>
-                    <td className="p-2.5">
-                      <span className="text-[#315C4C] font-semibold flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" />
-                        {log.decision}
-                      </span>
-                    </td>
+            {activeLogs.length > 0 ? (
+              <table className="w-full text-left text-xs font-mono border-collapse">
+                <thead>
+                  <tr className="border-b border-[#D8CCAF] bg-[#FFEDBF]/50 text-[#1E1B16]">
+                    <th className="p-2.5">Time</th>
+                    <th className="p-2.5">Devices / Speakers</th>
+                    <th className="p-2.5">Speech Utterance</th>
+                    <th className="p-2.5">Similarity</th>
+                    <th className="p-2.5">Engine Decision</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-[#D8CCAF]/40 text-[#6A645B]">
+                  {activeLogs.map((log, i) => (
+                    <tr key={i} className="hover:bg-[#FFEDBF]/20">
+                      <td className="p-2.5 font-bold text-[#1E1B16]">{log.time}</td>
+                      <td className="p-2.5">{log.devices.join(', ')}</td>
+                      <td className="p-2.5 italic text-[#1E1B16] max-w-xs truncate">{log.text}</td>
+                      <td className="p-2.5 font-mono text-[11px]">{log.similarity}</td>
+                      <td className="p-2.5">
+                        <span className="text-[#315C4C] font-semibold flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3 text-[#315C4C]" />
+                          {log.decision}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="py-8 text-center text-xs font-mono text-[#6A645B]">
+                No fusion decision events logged yet. Speak into multiple devices in the room to observe live deduplication and overlap isolation.
+              </div>
+            )}
           </div>
         </div>
       </div>

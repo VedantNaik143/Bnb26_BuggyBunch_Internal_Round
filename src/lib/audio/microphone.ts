@@ -1,11 +1,19 @@
 /**
- * Web Audio API helper for microphone capture, audio level analysis, and PCM preparation.
+ * Real Web Audio API microphone capture, 16 kHz mono PCM16 resampling,
+ * genuine time-domain RMS calculation, client speech recognition, and live audio level tracking.
  */
 
 export interface MicController {
-  start: () => Promise<boolean>;
+  start: (
+    onAudioChunk?: (chunk: ArrayBuffer, sequence: number, timestampMs: number) => void,
+    onSpeechText?: (text: string, isFinal: boolean) => void
+  ) => Promise<boolean>;
   stop: () => void;
+  mute: () => void;
+  unmute: () => void;
+  isMuted: () => boolean;
   getAudioLevel: () => number; // 0 to 100
+  getTrueRms: () => number;    // Genuine time-domain RMS
   isListening: () => boolean;
   getError: () => string | null;
 }
@@ -15,12 +23,27 @@ export class BrowserMicrophone implements MicController {
   private analyser: AnalyserNode | null = null;
   private mediaStream: MediaStream | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private dataArray: Uint8Array | null = null;
+  private processor: ScriptProcessorNode | null = null;
+  private timeDomainBuffer: Float32Array | null = null;
   private listening: boolean = false;
+  private muted: boolean = false;
   private errorMessage: string | null = null;
+  private sequenceNumber: number = 0;
+  private onChunkCallback?: (chunk: ArrayBuffer, sequence: number, timestampMs: number) => void;
+  private onSpeechCallback?: (text: string, isFinal: boolean) => void;
+  private currentRms: number = 0;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private recognition: any = null;
 
-  async start(): Promise<boolean> {
+  async start(
+    onAudioChunk?: (chunk: ArrayBuffer, sequence: number, timestampMs: number) => void,
+    onSpeechText?: (text: string, isFinal: boolean) => void
+  ): Promise<boolean> {
     this.errorMessage = null;
+    this.onChunkCallback = onAudioChunk;
+    this.onSpeechCallback = onSpeechText;
+    this.sequenceNumber = 0;
+
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Microphone mediaDevices API not supported in this browser.');
@@ -28,6 +51,7 @@ export class BrowserMicrophone implements MicController {
 
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -35,63 +59,252 @@ export class BrowserMicrophone implements MicController {
         video: false,
       });
 
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.audioContext = new AudioCtx();
 
+      // Ensure AudioContext is unlocked
       if (this.audioContext.state === 'suspended') {
+        const unlock = () => {
+          if (this.audioContext && this.audioContext.state === 'suspended') {
+            this.audioContext.resume();
+          }
+          document.removeEventListener('click', unlock);
+          document.removeEventListener('touchstart', unlock);
+        };
+        document.addEventListener('click', unlock);
+        document.addEventListener('touchstart', unlock);
         await this.audioContext.resume();
       }
 
+      const inputSampleRate = this.audioContext.sampleRate;
+      const targetSampleRate = 16000;
+
+      // Analyser for honest time-domain RMS
       this.analyser = this.audioContext.createAnalyser();
-      this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.5;
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.3;
+      this.timeDomainBuffer = new Float32Array(this.analyser.fftSize);
 
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.source.connect(this.analyser);
 
-      this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+      // Buffer size 4096 gives ~85ms at 48kHz or ~92ms at 44.1kHz
+      const bufferSize = 4096;
+      this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
+
+      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        if (!this.listening || this.muted) {
+          this.currentRms = 0;
+          return;
+        }
+
+        const inputChannelData = e.inputBuffer.getChannelData(0);
+
+        // 1. Calculate genuine time-domain RMS
+        let sumSquares = 0;
+        for (let i = 0; i < inputChannelData.length; i++) {
+          const sample = inputChannelData[i];
+          sumSquares += sample * sample;
+        }
+        const rms = Math.sqrt(sumSquares / inputChannelData.length);
+        this.currentRms = rms;
+
+        // 2. Resample to 16,000 Hz Mono PCM16
+        const pcm16 = this.downsampleTo16kPCM(inputChannelData, inputSampleRate, targetSampleRate);
+
+        if (this.onChunkCallback && pcm16.byteLength > 0) {
+          this.sequenceNumber += 1;
+          this.onChunkCallback(pcm16.buffer as ArrayBuffer, this.sequenceNumber, Date.now());
+        }
+      };
+
+      this.source.connect(this.processor);
+      this.processor.connect(this.audioContext.destination);
+
+      // 3. Initialize Browser Speech Recognition (Web Speech API) for real-time transcription
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRec && onSpeechText) {
+        try {
+          const rec = new SpeechRec();
+          rec.continuous = true;
+          rec.interimResults = true;
+          rec.lang = 'en-US';
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          rec.onresult = (event: any) => {
+            if (this.muted || !this.listening) return;
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const res = event.results[i];
+              if (res && res[0]) {
+                const text = res[0].transcript.trim();
+                const isFinal = Boolean(res.isFinal);
+                if (text) {
+                  onSpeechText(text, isFinal);
+                }
+              }
+            }
+          };
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          rec.onerror = (e: any) => {
+            console.debug('Browser speech recognition notice:', e.error);
+          };
+
+          rec.onend = () => {
+            if (this.listening && !this.muted) {
+              try {
+                rec.start();
+              } catch {
+                // ignore
+              }
+            }
+          };
+
+          rec.start();
+          this.recognition = rec;
+        } catch (e) {
+          console.debug('Browser speech recognition initialization notice:', e);
+        }
+      }
+
       this.listening = true;
+      this.muted = false;
       return true;
     } catch (err: unknown) {
       this.listening = false;
-      const message = err instanceof Error ? err.message : 'Permission denied or microphone unavailable';
+      const message =
+        err instanceof Error ? err.message : 'Permission denied or microphone unavailable';
       this.errorMessage = message;
-      console.warn('Microphone start error:', message);
+      console.warn('Microphone initialization error:', message);
       return false;
     }
   }
 
+  private downsampleTo16kPCM(
+    buffer: Float32Array,
+    inputRate: number,
+    targetRate: number
+  ): Int16Array {
+    if (targetRate === inputRate) {
+      const pcm16 = new Int16Array(buffer.length);
+      for (let i = 0; i < buffer.length; i++) {
+        const s = Math.max(-1, Math.min(1, buffer[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      return pcm16;
+    }
+
+    const ratio = inputRate / targetRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const pcm16 = new Int16Array(newLength);
+
+    for (let i = 0; i < newLength; i++) {
+      const originalIndex = Math.floor(i * ratio);
+      const s = Math.max(-1, Math.min(1, buffer[originalIndex] || 0));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+
+    return pcm16;
+  }
+
   stop(): void {
+    this.listening = false;
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch {
+        // ignore
+      }
+      this.recognition = null;
+    }
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
       this.mediaStream = null;
+    }
+    if (this.processor) {
+      this.processor.disconnect();
+      this.processor = null;
     }
     if (this.source) {
       this.source.disconnect();
       this.source = null;
     }
+    if (this.analyser) {
+      this.analyser.disconnect();
+      this.analyser = null;
+    }
     if (this.audioContext && this.audioContext.state !== 'closed') {
       this.audioContext.close();
       this.audioContext = null;
     }
-    this.listening = false;
+    this.currentRms = 0;
+  }
+
+  mute(): void {
+    this.muted = true;
+    if (this.recognition) {
+      try {
+        this.recognition.stop();
+      } catch {
+        // ignore
+      }
+    }
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = false;
+      });
+    }
+    this.currentRms = 0;
+  }
+
+  unmute(): void {
+    this.muted = false;
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = true;
+      });
+    }
+    if (this.recognition) {
+      try {
+        this.recognition.start();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  isMuted(): boolean {
+    return this.muted;
   }
 
   getAudioLevel(): number {
-    if (!this.listening || !this.analyser || !this.dataArray) {
+    if (!this.listening || this.muted) {
       return 0;
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (this.analyser as any).getByteFrequencyData(this.dataArray);
-
-    let sum = 0;
-    for (let i = 0; i < this.dataArray.length; i++) {
-      sum += this.dataArray[i];
+    if (this.analyser && this.timeDomainBuffer) {
+      // True time-domain RMS
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.analyser.getFloatTimeDomainData(this.timeDomainBuffer as any);
+      let sum = 0;
+      for (let i = 0; i < this.timeDomainBuffer.length; i++) {
+        const val = this.timeDomainBuffer[i];
+        sum += val * val;
+      }
+      const rms = Math.sqrt(sum / this.timeDomainBuffer.length);
+      this.currentRms = rms;
+      // Normal speech RMS ranges ~0.02 - 0.25; map to 0 - 100
+      return Math.min(100, Math.round(rms * 320));
     }
-    const avg = sum / this.dataArray.length;
-    // Map 0-128 to 0-100%
-    return Math.min(100, Math.round((avg / 64) * 100));
+
+    return Math.min(100, Math.round(this.currentRms * 320));
+  }
+
+  getTrueRms(): number {
+    return this.muted ? 0 : this.currentRms;
   }
 
   isListening(): boolean {

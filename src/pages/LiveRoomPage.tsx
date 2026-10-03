@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Session, Participant, CaptionSegment } from '../types/realtime';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Session, Participant, CaptionSegment, SessionMetrics } from '../types/realtime';
 import { RoomHeader } from '../components/RoomHeader';
 import { LiveTranscript } from '../components/LiveTranscript';
 import { ParticipantList } from '../components/ParticipantList';
@@ -9,11 +9,13 @@ import { SessionStats } from '../components/SessionStats';
 import { JoinCodeModal } from '../components/JoinCodeModal';
 import { LIVE_SIMULATION_SCRIPT } from '../lib/simulation/mockRoomData';
 import { BrowserMicrophone } from '../lib/audio/microphone';
+import { RealtimeClient } from '../lib/realtime/client';
 
 interface LiveRoomPageProps {
   session: Session;
-  onUpdateSession: (updatedSession: Session) => void;
+  onUpdateSession: (updater: Session | ((prev: Session) => Session)) => void;
   onEndSession: () => void;
+  onLeaveSession?: () => void;
   onOpenEvaluation: () => void;
   elapsedSeconds: number;
 }
@@ -22,49 +24,263 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
   session,
   onUpdateSession,
   onEndSession,
+  onLeaveSession,
   onOpenEvaluation,
   elapsedSeconds,
 }) => {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
-  const [isSimulating, setIsSimulating] = useState(true);
+  const [isLiveMode, setIsLiveMode] = useState(true);
+  const [isSimulating, setIsSimulating] = useState(false);
   const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
+
   const simStepIndexRef = useRef(0);
   const micRef = useRef<BrowserMicrophone | null>(null);
+  const realtimeClientRef = useRef<RealtimeClient | null>(null);
+  const timeoutIdsRef = useRef<number[]>([]);
 
-  // Initialize hardware microphone audio level tracking for local user
+  // Find or determine local participant
+  const localParticipant = session.participants.find((p) => p.isLocal) || session.participants[0];
+
+  // Functional updater helper
+  const updateSessionState = useCallback(
+    (fn: (prev: Session) => Session) => {
+      onUpdateSession(fn);
+    },
+    [onUpdateSession]
+  );
+
+  // Initialize Realtime WebSocket Connection (Live Mode)
   useEffect(() => {
+    if (!isLiveMode || !session.sessionId || !localParticipant) return;
+
+    const client = new RealtimeClient({
+      onSessionSync: (synced) => {
+        updateSessionState((prev) => ({
+          ...synced,
+          participants: synced.participants.map((p) => ({
+            ...p,
+            isLocal: p.participantId === localParticipant.participantId,
+          })),
+        }));
+      },
+      onParticipantJoined: (newPart, connectedCount) => {
+        updateSessionState((prev) => {
+          const exists = prev.participants.some((p) => p.participantId === newPart.participantId);
+          const updated = exists
+            ? prev.participants.map((p) => (p.participantId === newPart.participantId ? newPart : p))
+            : [...prev.participants, newPart];
+          return {
+            ...prev,
+            participants: updated,
+            metrics: { ...prev.metrics, connectedDevices: connectedCount },
+          };
+        });
+      },
+      onParticipantLeft: (partId, state, connectedCount) => {
+        updateSessionState((prev) => ({
+          ...prev,
+          participants: prev.participants.map((p) =>
+            p.participantId === partId ? { ...p, connectionState: state as any, audioLevel: 0 } : p
+          ),
+          metrics: { ...prev.metrics, connectedDevices: connectedCount },
+        }));
+      },
+      onParticipantReconnected: (part, connectedCount) => {
+        updateSessionState((prev) => ({
+          ...prev,
+          participants: prev.participants.map((p) =>
+            p.participantId === part.participantId ? { ...part, connectionState: 'CONNECTED' } : p
+          ),
+          metrics: { ...prev.metrics, connectedDevices: connectedCount },
+        }));
+      },
+      onDeviceQualityChanged: (partId, level, score, tier) => {
+        if (level > 15) {
+          setActiveSpeakerId(partId);
+        }
+        updateSessionState((prev) => ({
+          ...prev,
+          participants: prev.participants.map((p) =>
+            p.participantId === partId ? { ...p, audioLevel: level, qualityScore: score } : p
+          ),
+        }));
+      },
+      onCaptionCreated: (segment, metrics) => {
+        setActiveSpeakerId(segment.speakerId);
+        updateSessionState((prev) => {
+          const exists = prev.transcriptSegments.some((s) => s.segmentId === segment.segmentId);
+          return {
+            ...prev,
+            transcriptSegments: exists ? prev.transcriptSegments : [...prev.transcriptSegments, segment],
+            metrics: metrics || { ...prev.metrics, speechEvents: prev.metrics.speechEvents + 1 },
+          };
+        });
+      },
+      onCaptionUpdated: (segment, metrics) => {
+        setActiveSpeakerId(segment.speakerId);
+        updateSessionState((prev) => ({
+          ...prev,
+          transcriptSegments: prev.transcriptSegments.map((s) =>
+            s.segmentId === segment.segmentId ? segment : s
+          ),
+          metrics: metrics || prev.metrics,
+        }));
+      },
+      onCaptionFinal: (segment, metrics) => {
+        setActiveSpeakerId(segment.speakerId);
+        updateSessionState((prev) => ({
+          ...prev,
+          transcriptSegments: prev.transcriptSegments.map((s) =>
+            s.segmentId === segment.segmentId ? segment : s
+          ),
+          metrics: metrics || prev.metrics,
+        }));
+      },
+      onOverlapDetected: (groupId, speakerId, metrics) => {
+        updateSessionState((prev) => ({
+          ...prev,
+          metrics: metrics || { ...prev.metrics, overlapCount: prev.metrics.overlapCount + 1 },
+        }));
+      },
+    });
+
+    realtimeClientRef.current = client;
+    client.connect(session.sessionId, localParticipant.participantId);
+
+    return () => {
+      client.disconnect();
+      realtimeClientRef.current = null;
+    };
+  }, [isLiveMode, session.sessionId, localParticipant?.participantId, updateSessionState]);
+
+  // Real Hardware Microphone Pipeline
+  useEffect(() => {
+    if (!isLiveMode) return;
+
     const mic = new BrowserMicrophone();
-    micRef.current = mic;
-    mic.start().then((ok) => {
+    mic.start(
+      (pcm16Chunk) => {
+        if (!isMuted && realtimeClientRef.current) {
+          realtimeClientRef.current.sendAudioChunk(pcm16Chunk);
+        }
+      },
+      (spokenText, isFinal) => {
+        if (!isMuted && spokenText.trim()) {
+          const speaker = localParticipant || session.participants[0] || {
+            participantId: 'p-local',
+            displayName: 'You',
+            deviceId: 'local-mic',
+          };
+          setActiveSpeakerId(speaker.participantId);
+
+          if (realtimeClientRef.current) {
+            realtimeClientRef.current.sendSpeechText(spokenText, isFinal);
+          }
+
+          // Immediate local caption creation / revision
+          const nowMs = elapsedSeconds * 1000;
+          updateSessionState((prev) => {
+            const existingIdx = prev.transcriptSegments.findIndex(
+              (s) => s.speakerId === speaker.participantId && s.status === 'PROVISIONAL'
+            );
+
+            if (existingIdx >= 0) {
+              const updated = [...prev.transcriptSegments];
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                text: spokenText.trim(),
+                status: isFinal ? 'FINAL' : 'PROVISIONAL',
+                endMs: nowMs + 1000,
+                updatedAt: Date.now(),
+              };
+              return {
+                ...prev,
+                transcriptSegments: updated,
+              };
+            } else {
+              const newSegment: CaptionSegment = {
+                segmentId: `live-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                sessionId: prev.sessionId,
+                speakerId: speaker.participantId,
+                speakerName: speaker.displayName,
+                sourceDeviceId: speaker.deviceId,
+                startMs: nowMs,
+                endMs: nowMs + 2000,
+                text: spokenText.trim(),
+                status: isFinal ? 'FINAL' : 'PROVISIONAL',
+                confidence: 'high',
+                overlap: false,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                duplicateSourcesCount: 1,
+              };
+              return {
+                ...prev,
+                transcriptSegments: [...prev.transcriptSegments, newSegment],
+                metrics: {
+                  ...prev.metrics,
+                  speechEvents: prev.metrics.speechEvents + 1,
+                },
+              };
+            }
+          });
+        }
+      }
+    ).then((ok) => {
       if (ok) {
         const interval = setInterval(() => {
           if (!isMuted && micRef.current) {
             const level = micRef.current.getAudioLevel();
-            // Update local participant audio level
-            if (level > 15) {
-              const localPart = session.participants.find((p) => p.isLocal);
-              if (localPart) {
-                setActiveSpeakerId(localPart.participantId);
-              }
+            if (level > 15 && localParticipant) {
+              setActiveSpeakerId(localParticipant.participantId);
             }
           }
-        }, 150);
+        }, 120);
         return () => clearInterval(interval);
       }
     });
 
     return () => {
       mic.stop();
+      micRef.current = null;
     };
-  }, [isMuted]);
+  }, [isLiveMode, isMuted, localParticipant]);
 
-  // Realtime multi-device simulation loop
+  // Handle Mute / Unmute
+  const handleToggleLocalMute = () => {
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+
+    if (micRef.current) {
+      if (nextMuted) {
+        micRef.current.mute();
+      } else {
+        micRef.current.unmute();
+      }
+    }
+
+    if (realtimeClientRef.current) {
+      if (nextMuted) {
+        realtimeClientRef.current.sendMicStopped();
+      } else {
+        realtimeClientRef.current.sendMicStarted();
+      }
+    }
+
+    updateSessionState((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.isLocal ? { ...p, microphoneState: nextMuted ? 'MUTED' : 'ACTIVE', audioLevel: 0 } : p
+      ),
+    }));
+  };
+
+  // Demo Simulation Loop (for scripted presentations)
   useEffect(() => {
-    if (!isSimulating || session.status !== 'LIVE') return;
+    if (!isSimulating || isLiveMode || session.status !== 'LIVE') return;
 
     const script = LIVE_SIMULATION_SCRIPT;
-    let timeoutId: NodeJS.Timeout;
 
     const runNextTurn = () => {
       const turn = script[simStepIndexRef.current % script.length];
@@ -72,11 +288,10 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
 
       setActiveSpeakerId(turn.speakerId);
 
-      // Create new provisional segment ID
       const newSegmentId = `sim-seg-${Date.now()}`;
       const startMs = elapsedSeconds * 1000;
 
-      // 1. Post Provisional Step 1
+      // 1. Post Provisional
       const provisionalSegment: CaptionSegment = {
         segmentId: newSegmentId,
         sessionId: session.sessionId,
@@ -95,20 +310,17 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
         duplicateSourcesCount: 2,
       };
 
-      onUpdateSession({
-        ...session,
-        transcriptSegments: [...session.transcriptSegments, provisionalSegment],
-        metrics: {
-          ...session.metrics,
-          speechEvents: session.metrics.speechEvents + 1,
-        },
-      });
+      updateSessionState((prev) => ({
+        ...prev,
+        transcriptSegments: [...prev.transcriptSegments, provisionalSegment],
+        metrics: { ...prev.metrics, speechEvents: prev.metrics.speechEvents + 1 },
+      }));
 
-      // 2. Provisional Step 2 (Updated in-place) after 1.2s
-      timeoutId = setTimeout(() => {
-        onUpdateSession({
-          ...session,
-          transcriptSegments: session.transcriptSegments.map((s) =>
+      // 2. Updated in-place after 1.2s
+      const tid1 = window.setTimeout(() => {
+        updateSessionState((prev) => ({
+          ...prev,
+          transcriptSegments: prev.transcriptSegments.map((s) =>
             s.segmentId === newSegmentId
               ? {
                   ...s,
@@ -118,214 +330,211 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
                 }
               : s
           ),
-          metrics: {
-            ...session.metrics,
-            correctionCount: session.metrics.correctionCount + 1,
-          },
-        });
+          metrics: { ...prev.metrics, correctionCount: prev.metrics.correctionCount + 1 },
+        }));
 
-        // 3. Finalize segment after another 1.4s
-        timeoutId = setTimeout(() => {
-          let updatedSegments = session.transcriptSegments.map((s) =>
-            s.segmentId === newSegmentId
-              ? {
-                  ...s,
-                  text: turn.finalText,
-                  status: 'FINAL' as const,
-                  confidence: 'high' as const,
-                  duplicateSourcesCount: 3,
-                  updatedAt: Date.now(),
-                }
-              : s
-          );
+        // 3. Finalize segment after 1.4s
+        const tid2 = window.setTimeout(() => {
+          updateSessionState((prev) => {
+            let updatedSegments = prev.transcriptSegments.map((s) =>
+              s.segmentId === newSegmentId
+                ? {
+                    ...s,
+                    text: turn.finalText,
+                    status: 'FINAL' as const,
+                    confidence: 'high' as const,
+                    duplicateSourcesCount: 3,
+                    updatedAt: Date.now(),
+                  }
+                : s
+            );
 
-          // If this scenario simulates overlap, add the partner's overlapping segment
-          if (turn.isOverlap && turn.overlapPartner) {
-            const overlapPartnerSeg: CaptionSegment = {
-              segmentId: `overlap-partner-${Date.now()}`,
-              sessionId: session.sessionId,
-              speakerId: turn.overlapPartner.speakerId,
-              speakerName: turn.overlapPartner.speakerName,
-              sourceDeviceId: turn.overlapPartner.sourceDeviceId,
-              startMs: startMs + 200,
-              endMs: startMs + 2200,
-              text: turn.overlapPartner.text,
-              status: 'FINAL',
-              confidence: 'high',
-              overlap: true,
-              overlapGroupId: provisionalSegment.overlapGroupId,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              duplicateSourcesCount: 2,
+            if (turn.isOverlap && turn.overlapPartner) {
+              const overlapPartnerSeg: CaptionSegment = {
+                segmentId: `overlap-partner-${Date.now()}`,
+                sessionId: session.sessionId,
+                speakerId: turn.overlapPartner.speakerId,
+                speakerName: turn.overlapPartner.speakerName,
+                sourceDeviceId: turn.overlapPartner.sourceDeviceId,
+                startMs: startMs + 200,
+                endMs: startMs + 2400,
+                text: turn.overlapPartner.text,
+                status: 'FINAL',
+                confidence: 'high',
+                overlap: true,
+                overlapGroupId: turn.isOverlap ? `grp-${Date.now()}` : undefined,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                duplicateSourcesCount: 2,
+              };
+              updatedSegments = [...updatedSegments, overlapPartnerSeg];
+            }
+
+            return {
+              ...prev,
+              transcriptSegments: updatedSegments,
+              metrics: {
+                ...prev.metrics,
+                overlapCount: turn.isOverlap ? prev.metrics.overlapCount + 1 : prev.metrics.overlapCount,
+              },
             };
-            updatedSegments = [...updatedSegments, overlapPartnerSeg];
-          }
-
-          onUpdateSession({
-            ...session,
-            transcriptSegments: updatedSegments,
-            metrics: {
-              ...session.metrics,
-              deduplicatedEvents: session.metrics.deduplicatedEvents + 2,
-              overlapCount: turn.isOverlap
-                ? session.metrics.overlapCount + 1
-                : session.metrics.overlapCount,
-            },
           });
 
-          setActiveSpeakerId(null);
-
-          // Wait before next conversation turn
-          timeoutId = setTimeout(runNextTurn, 3200);
+          // Schedule next turn
+          const tid3 = window.setTimeout(runNextTurn, 2200);
+          timeoutIdsRef.current.push(tid3);
         }, 1400);
+
+        timeoutIdsRef.current.push(tid2);
       }, 1200);
+
+      timeoutIdsRef.current.push(tid1);
     };
 
-    timeoutId = setTimeout(runNextTurn, 2500);
+    const initialTid = window.setTimeout(runNextTurn, 1000);
+    timeoutIdsRef.current.push(initialTid);
 
     return () => {
-      clearTimeout(timeoutId);
+      timeoutIdsRef.current.forEach((id) => clearTimeout(id));
+      timeoutIdsRef.current = [];
     };
-  }, [isSimulating, session.status, session.transcriptSegments.length]);
+  }, [isSimulating, isLiveMode, session.status, elapsedSeconds, session.sessionId, updateSessionState]);
 
-  // Handler for sending local user's speech
+  const handleToggleMode = () => {
+    const nextMode = !isLiveMode;
+    setIsLiveMode(nextMode);
+    if (!nextMode) {
+      setIsSimulating(true);
+    } else {
+      setIsSimulating(false);
+    }
+  };
+
+  const handleTogglePause = () => {
+    const nextStatus = session.status === 'LIVE' ? 'PAUSED' : 'LIVE';
+    updateSessionState((prev) => ({
+      ...prev,
+      status: nextStatus,
+    }));
+  };
+
+  const handleToggleParticipantMute = (participantId: string) => {
+    updateSessionState((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.participantId === participantId
+          ? { ...p, microphoneState: p.microphoneState === 'ACTIVE' ? 'MUTED' : 'ACTIVE', audioLevel: 0 }
+          : p
+      ),
+    }));
+  };
+
+  const handleSimulateDrop = (participantId: string) => {
+    updateSessionState((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.participantId === participantId ? { ...p, connectionState: 'TEMPORARILY_LOST', audioLevel: 0 } : p
+      ),
+      metrics: {
+        ...prev.metrics,
+        connectedDevices: Math.max(1, prev.metrics.connectedDevices - 1),
+      },
+    }));
+
+    // Auto reconnect after 4 seconds
+    setTimeout(() => {
+      updateSessionState((prev) => ({
+        ...prev,
+        participants: prev.participants.map((p) =>
+          p.participantId === participantId ? { ...p, connectionState: 'CONNECTED' } : p
+        ),
+        metrics: {
+          ...prev.metrics,
+          connectedDevices: prev.metrics.connectedDevices + 1,
+        },
+      }));
+    }, 4000);
+  };
+
+  const handleSimulateJoin = () => {
+    const names = ['Liam Gallagher', 'Mei-Ling Zhou', 'Carlos Morales', 'Amina Idris'];
+    const randomName = names[Math.floor(Math.random() * names.length)];
+    const angle = (session.participants.length * 60 + 45) % 360;
+
+    const newParticipant: Participant = {
+      participantId: `p-${Date.now()}`,
+      displayName: randomName,
+      deviceId: `device-${Math.floor(Math.random() * 899 + 100)}`,
+      deviceType: 'mobile',
+      deviceLabel: `${randomName.split(' ')[0]}’s Mobile`,
+      joinedAt: Date.now(),
+      lastSeenAt: Date.now(),
+      connectionState: 'CONNECTED',
+      microphoneState: 'ACTIVE',
+      qualityScore: 93,
+      isLocal: false,
+      audioLevel: 0,
+      tableAngle: angle,
+    };
+
+    updateSessionState((prev) => ({
+      ...prev,
+      participants: [...prev.participants, newParticipant],
+      metrics: {
+        ...prev.metrics,
+        connectedDevices: prev.metrics.connectedDevices + 1,
+      },
+    }));
+  };
+
   const handleSendLocalSpeech = (text: string) => {
-    const localPart = session.participants.find((p) => p.isLocal) || session.participants[0];
-    const newSeg: CaptionSegment = {
-      segmentId: `user-seg-${Date.now()}`,
+    if (!text.trim()) return;
+
+    const speaker = localParticipant || session.participants[0] || {
+      participantId: 'p-local',
+      displayName: 'You',
+      deviceId: 'local-dev',
+    };
+
+    setActiveSpeakerId(speaker.participantId);
+    const newSegment: CaptionSegment = {
+      segmentId: `local-seg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       sessionId: session.sessionId,
-      speakerId: localPart.participantId,
-      speakerName: localPart.displayName,
-      sourceDeviceId: localPart.deviceId,
+      speakerId: speaker.participantId,
+      speakerName: speaker.displayName,
+      sourceDeviceId: speaker.deviceId,
       startMs: elapsedSeconds * 1000,
       endMs: elapsedSeconds * 1000 + 2000,
-      text,
+      text: text.trim(),
       status: 'FINAL',
       confidence: 'high',
       overlap: false,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      duplicateSourcesCount: 4,
+      duplicateSourcesCount: 1,
     };
 
-    setActiveSpeakerId(localPart.participantId);
-    setTimeout(() => setActiveSpeakerId(null), 2500);
-
-    onUpdateSession({
-      ...session,
-      transcriptSegments: [...session.transcriptSegments, newSeg],
+    updateSessionState((prev) => ({
+      ...prev,
+      transcriptSegments: [...prev.transcriptSegments, newSegment],
       metrics: {
-        ...session.metrics,
-        speechEvents: session.metrics.speechEvents + 1,
-        deduplicatedEvents: session.metrics.deduplicatedEvents + 3,
+        ...prev.metrics,
+        speechEvents: prev.metrics.speechEvents + 1,
       },
-    });
-  };
+    }));
 
-  // Toggle participant mute
-  const handleToggleParticipantMute = (participantId: string) => {
-    onUpdateSession({
-      ...session,
-      participants: session.participants.map((p) =>
-        p.participantId === participantId
-          ? {
-              ...p,
-              microphoneState: p.microphoneState === 'MUTED' ? 'ACTIVE' : 'MUTED',
-            }
-          : p
-      ),
-    });
-  };
-
-  // Simulate network jitter / connection drop & reconnect
-  const handleSimulateDrop = (participantId: string) => {
-    const target = session.participants.find((p) => p.participantId === participantId);
-    if (!target) return;
-
-    if (target.connectionState === 'CONNECTED') {
-      onUpdateSession({
-        ...session,
-        participants: session.participants.map((p) =>
-          p.participantId === participantId
-            ? { ...p, connectionState: 'TEMPORARILY_LOST' }
-            : p
-        ),
-      });
-
-      // Auto reconnect after 3.5 seconds with same participant identity
-      setTimeout(() => {
-        onUpdateSession({
-          ...session,
-          participants: session.participants.map((p) =>
-            p.participantId === participantId
-              ? { ...p, connectionState: 'CONNECTED', lastSeenAt: Date.now() }
-              : p
-          ),
-        });
-      }, 3500);
-    } else {
-      // Reconnect immediately
-      onUpdateSession({
-        ...session,
-        participants: session.participants.map((p) =>
-          p.participantId === participantId
-            ? { ...p, connectionState: 'CONNECTED', lastSeenAt: Date.now() }
-            : p
-        ),
-      });
-    }
-  };
-
-  // Simulate a new mobile phone joining
-  const handleSimulateJoin = () => {
-    const names = ['Kai Takahashi', 'Amara Okafor', 'Liam O’Connor', 'Priya Patel'];
-    const chosenName = names[session.participants.length % names.length];
-    const newParticipant: Participant = {
-      participantId: `p-${Date.now()}`,
-      displayName: chosenName,
-      deviceId: `device-${Math.floor(Math.random() * 900 + 100)}`,
-      deviceType: 'mobile',
-      deviceLabel: `${chosenName.split(' ')[0]}’s Phone`,
-      joinedAt: Date.now(),
-      lastSeenAt: Date.now(),
-      connectionState: 'CONNECTED',
-      microphoneState: 'ACTIVE',
-      qualityScore: 91,
-      audioLevel: 0,
-      tableAngle: (session.participants.length * 55) % 360,
-    };
-
-    onUpdateSession({
-      ...session,
-      participants: [...session.participants, newParticipant],
-      metrics: {
-        ...session.metrics,
-        connectedDevices: session.participants.length + 1,
-      },
-    });
-  };
-
-  const handleTogglePause = () => {
-    onUpdateSession({
-      ...session,
-      status: session.status === 'LIVE' ? 'PAUSED' : 'LIVE',
-    });
-  };
-
-  const handleToggleLocalMute = () => {
-    const nextMuted = !isMuted;
-    setIsMuted(nextMuted);
-    const localPart = session.participants.find((p) => p.isLocal);
-    if (localPart) {
-      handleToggleParticipantMute(localPart.participantId);
+    if (realtimeClientRef.current) {
+      realtimeClientRef.current.sendSpeechText(text.trim(), true);
     }
   };
 
   const handleTriggerOverlap = () => {
+    const p1 = localParticipant || session.participants[0];
+    const p2 = session.participants.find((p) => p.participantId !== p1?.participantId) || session.participants[0];
+    if (!p1 || !p2) return;
+
+    const overlapGroupId = `grp-${Date.now()}`;
     const time = elapsedSeconds * 1000;
-    const overlapGroupId = `manual-overlap-${Date.now()}`;
-    const p1 = session.participants[1] || session.participants[0];
-    const p2 = session.participants[2] || session.participants[0];
 
     const seg1: CaptionSegment = {
       segmentId: `overlap-1-${Date.now()}`,
@@ -335,7 +544,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       sourceDeviceId: p1.deviceId,
       startMs: time,
       endMs: time + 2500,
-      text: 'We must verify the distributed acoustic weights before deploying.',
+      text: 'We should definitely schedule the production release for Friday afternoon.',
       status: 'FINAL',
       confidence: 'high',
       overlap: true,
@@ -363,15 +572,15 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       duplicateSourcesCount: 2,
     };
 
-    onUpdateSession({
-      ...session,
-      transcriptSegments: [...session.transcriptSegments, seg1, seg2],
+    updateSessionState((prev) => ({
+      ...prev,
+      transcriptSegments: [...prev.transcriptSegments, seg1, seg2],
       metrics: {
-        ...session.metrics,
-        overlapCount: session.metrics.overlapCount + 1,
-        speechEvents: session.metrics.speechEvents + 2,
+        ...prev.metrics,
+        overlapCount: prev.metrics.overlapCount + 1,
+        speechEvents: prev.metrics.speechEvents + 2,
       },
-    });
+    }));
   };
 
   return (
@@ -382,27 +591,39 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
           session={session}
           elapsedSeconds={elapsedSeconds}
           isMuted={isMuted}
+          isHost={localParticipant?.isHost ?? false}
+          isLiveMode={isLiveMode}
+          onToggleMode={handleToggleMode}
           onToggleMute={handleToggleLocalMute}
           onTogglePause={handleTogglePause}
           onEndSession={onEndSession}
+          onLeaveSession={onLeaveSession || onEndSession}
           onOpenShareModal={() => setIsShareModalOpen(true)}
           onOpenEvaluation={onOpenEvaluation}
         />
 
-        {/* 70/30 Main Layout: 70-75% Transcript, 25-30% Session Panel */}
+        {/* 70/30 Main Layout: 70-75% Transcript Column, 25-30% Session Panel */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Main Transcript (8 cols out of 12 ~ 67% to 75%) */}
-          <div className="lg:col-span-8 h-[calc(100vh-210px)] min-h-[580px]">
-            <LiveTranscript
-              session={session}
-              onSendLocalSpeech={handleSendLocalSpeech}
-              isSimulating={isSimulating}
-              onToggleSimulation={() => setIsSimulating(!isSimulating)}
-              onTriggerOverlap={handleTriggerOverlap}
-            />
+          {/* Main Transcript Column (8 cols out of 12) */}
+          <div className="lg:col-span-8 space-y-4">
+            {/* The Two Moved Boxes: Latency Indicator & Evidence Metrics side-by-side */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <LatencyIndicator metrics={session.metrics} />
+              <SessionStats metrics={session.metrics} />
+            </div>
+
+            {/* Live Transcript Container */}
+            <div className="min-h-[500px] h-[580px]">
+              <LiveTranscript
+                session={session}
+                onSendLocalSpeech={handleSendLocalSpeech}
+                isMuted={isMuted}
+                onToggleMute={handleToggleLocalMute}
+              />
+            </div>
           </div>
 
-          {/* Secondary Session & Acoustic Panel (4 cols out of 12 ~ 25% to 33%) */}
+          {/* Secondary Session & Acoustic Panel (4 cols out of 12) */}
           <div className="lg:col-span-4 space-y-4">
             {/* Spatial Table Visualizer */}
             <div className="bg-[#FFF8E8] border border-[#D8CCAF] rounded-lg shadow-xs overflow-hidden p-2">
@@ -425,16 +646,9 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
             <ParticipantList
               participants={session.participants}
               onToggleMute={handleToggleParticipantMute}
-              onSimulateDrop={handleSimulateDrop}
               onInviteClick={() => setIsShareModalOpen(true)}
               onSimulateJoin={handleSimulateJoin}
             />
-
-            {/* Latency Breakdown */}
-            <LatencyIndicator metrics={session.metrics} />
-
-            {/* Telemetry Stats */}
-            <SessionStats metrics={session.metrics} />
           </div>
         </div>
       </div>

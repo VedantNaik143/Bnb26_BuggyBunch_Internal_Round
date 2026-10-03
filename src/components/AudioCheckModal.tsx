@@ -23,6 +23,7 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
   const [peakDetected, setPeakDetected] = useState(false);
   const micRef = useRef<BrowserMicrophone | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const simIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     const mic = new BrowserMicrophone();
@@ -42,11 +43,19 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
       }
+      if (simIntervalRef.current) {
+        clearInterval(simIntervalRef.current);
+        simIntervalRef.current = null;
+      }
       mic.stop();
     };
   }, []);
 
   const startPolling = () => {
+    if (simIntervalRef.current) {
+      clearInterval(simIntervalRef.current);
+      simIntervalRef.current = null;
+    }
     const poll = () => {
       if (micRef.current) {
         const lvl = micRef.current.getAudioLevel();
@@ -62,15 +71,16 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
   };
 
   const startSimulatedPolling = () => {
+    if (simIntervalRef.current) {
+      clearInterval(simIntervalRef.current);
+    }
     let t = 0;
-    const interval = setInterval(() => {
+    simIntervalRef.current = window.setInterval(() => {
       t += 0.2;
       const wave = Math.sin(t) * 20 + 25 + Math.random() * 10;
       setAudioLevel(Math.max(0, Math.min(100, Math.round(wave))));
       setTestSuccess(true);
     }, 100);
-
-    return () => clearInterval(interval);
   };
 
   const handleRetryMic = async () => {

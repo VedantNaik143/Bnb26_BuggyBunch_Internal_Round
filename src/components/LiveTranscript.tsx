@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, ArrowDown, Download, Mic, Send, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Search, ArrowDown, Download, Mic, MicOff, Send } from 'lucide-react';
 import { CaptionSegment, Session } from '../types/realtime';
 import { CaptionSegmentItem } from './CaptionSegmentItem';
 import { OverlapGroupItem } from './OverlapGroupItem';
@@ -8,22 +8,19 @@ import { exportTranscriptAsTxt, exportTranscriptAsJson } from '../lib/formatting
 interface LiveTranscriptProps {
   session: Session;
   onSendLocalSpeech?: (text: string) => void;
-  isSimulating: boolean;
-  onToggleSimulation: () => void;
-  onTriggerOverlap: () => void;
+  isMuted?: boolean;
+  onToggleMute?: () => void;
 }
 
 export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
   session,
   onSendLocalSpeech,
-  isSimulating,
-  onToggleSimulation,
-  onTriggerOverlap,
+  isMuted = false,
+  onToggleMute,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [customText, setCustomText] = useState('');
-  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   // Group overlapping segments by overlapGroupId
@@ -57,12 +54,12 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
     return items;
   }, [session.transcriptSegments, searchQuery]);
 
-  // Auto-scroll logic
+  // Safe inner auto-scroll: does not hijack the outer window scroll
   useEffect(() => {
-    if (autoScroll && transcriptEndRef.current) {
-      transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (autoScroll && containerRef.current) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
-  }, [session.transcriptSegments, autoScroll]);
+  }, [session.transcriptSegments.length, autoScroll]);
 
   const handleScroll = () => {
     if (!containerRef.current) return;
@@ -92,6 +89,12 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
           <span className="font-mono text-[#6A645B]">
             {session.transcriptSegments.length} turns
           </span>
+          {!isMuted && (
+            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-[#315C4C] bg-[#315C4C]/10 px-2 py-0.5 rounded border border-[#315C4C]/20">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#315C4C] animate-pulse" />
+              Mic Active (Continuous)
+            </span>
+          )}
         </div>
 
         {/* Action Controls */}
@@ -111,7 +114,7 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
           {/* Export Actions */}
           <button
             onClick={() => exportTranscriptAsTxt(session)}
-            className="px-2.5 py-1 text-xs font-medium rounded border border-[#D8CCAF] bg-[#FFF8E8] hover:bg-[#FFEDBF]/60 text-[#1E1B16] transition-colors flex items-center gap-1 shadow-2xs"
+            className="px-2.5 py-1 text-xs font-medium rounded border border-[#D8CCAF] bg-[#FFF8E8] hover:bg-[#FFEDBF]/60 text-[#1E1B16] transition-colors flex items-center gap-1 shadow-2xs cursor-pointer"
             title="Download plain text transcript"
           >
             <Download className="w-3 h-3 text-[#315C4C]" />
@@ -120,7 +123,7 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
 
           <button
             onClick={() => exportTranscriptAsJson(session)}
-            className="px-2.5 py-1 text-xs font-medium rounded border border-[#D8CCAF] bg-[#FFF8E8] hover:bg-[#FFEDBF]/60 text-[#1E1B16] transition-colors flex items-center gap-1 shadow-2xs"
+            className="px-2.5 py-1 text-xs font-medium rounded border border-[#D8CCAF] bg-[#FFF8E8] hover:bg-[#FFEDBF]/60 text-[#1E1B16] transition-colors flex items-center gap-1 shadow-2xs cursor-pointer"
             title="Download full JSON session data"
           >
             .JSON
@@ -135,9 +138,11 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
         className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 select-text bg-[#FFF8E8]"
       >
         {processedItems.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-48 text-[#6A645B] text-center">
-            <p className="text-sm font-medium">No caption matches found.</p>
-            <p className="text-xs mt-1">Start speaking or resume simulation.</p>
+          <div className="flex flex-col items-center justify-center h-48 text-[#6A645B] text-center space-y-2">
+            <p className="text-sm font-semibold text-[#1E1B16]">Awaiting live speech...</p>
+            <p className="text-xs text-[#6A645B] max-w-sm">
+              Press the microphone button below to talk freely, or type a sentence and press Transcribe.
+            </p>
           </div>
         ) : (
           processedItems.map((item, idx) => {
@@ -153,7 +158,6 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
             );
           })
         )}
-        <div ref={transcriptEndRef} />
       </div>
 
       {/* Auto-scroll resume prompt */}
@@ -163,9 +167,11 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
           <button
             onClick={() => {
               setAutoScroll(true);
-              transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+              if (containerRef.current) {
+                containerRef.current.scrollTop = containerRef.current.scrollHeight;
+              }
             }}
-            className="font-medium text-[#315C4C] hover:underline flex items-center gap-1 text-[11px]"
+            className="font-medium text-[#315C4C] hover:underline flex items-center gap-1 text-[11px] cursor-pointer"
           >
             <ArrowDown className="w-3 h-3" />
             Jump to latest caption
@@ -173,57 +179,50 @@ export const LiveTranscript: React.FC<LiveTranscriptProps> = ({
         </div>
       )}
 
-      {/* Local Participant Input Bar / Simulation Bar */}
-      <div className="p-3 border-t border-[#D8CCAF] bg-[#FFEDBF]/20 space-y-2">
+      {/* Local Participant Input Bar */}
+      <div className="p-3 border-t border-[#D8CCAF] bg-[#FFEDBF]/20">
         <form onSubmit={handleCustomSubmit} className="flex items-center gap-2">
           <div className="relative flex-1">
-            <Mic className="w-3.5 h-3.5 text-[#315C4C] absolute left-3 top-1/2 -translate-y-1/2" />
+            {/* Interactive Mic Toggle Button: stays ON until clicked again */}
+            <button
+              type="button"
+              onClick={onToggleMute}
+              className={`absolute left-2.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full transition-all cursor-pointer ${
+                !isMuted
+                  ? 'bg-[#315C4C] text-[#FFF8E8] shadow-xs ring-2 ring-[#315C4C]/30 animate-pulse'
+                  : 'bg-[#FFEDBF] text-[#6A645B] hover:text-[#1E1B16] hover:bg-[#FFEDBF]/80'
+              }`}
+              title={
+                !isMuted
+                  ? 'Microphone is ON and listening continuously. Click to mute.'
+                  : 'Microphone is OFF. Click to start continuous listening.'
+              }
+            >
+              {!isMuted ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+            </button>
+
             <input
               type="text"
               value={customText}
               onChange={(e) => setCustomText(e.target.value)}
-              placeholder="Speak or type a live caption from your microphone..."
-              className="w-full pl-9 pr-3 py-2 text-xs bg-[#FFF8E8] border border-[#D8CCAF] rounded-md text-[#1E1B16] focus:outline-none focus:ring-1 focus:ring-[#315C4C]"
+              placeholder={
+                !isMuted
+                  ? 'Listening for your voice... or type here and press Transcribe'
+                  : 'Click the mic icon to start continuous speech or type here...'
+              }
+              className="w-full pl-11 pr-3 py-2 text-xs bg-[#FFF8E8] border border-[#D8CCAF] rounded-md text-[#1E1B16] focus:outline-none focus:ring-1 focus:ring-[#315C4C]"
             />
           </div>
+
           <button
             type="submit"
             disabled={!customText.trim()}
-            className="px-4 py-2 text-xs font-semibold bg-[#315C4C] text-[#FFF8E8] rounded-md hover:bg-[#27493C] disabled:opacity-40 transition-colors flex items-center gap-1.5 shadow-xs shrink-0"
+            className="px-4 py-2 text-xs font-semibold bg-[#315C4C] text-[#FFF8E8] rounded-md hover:bg-[#27493C] disabled:opacity-40 transition-colors flex items-center gap-1.5 shadow-xs shrink-0 cursor-pointer"
           >
             <Send className="w-3.5 h-3.5" />
             Transcribe
           </button>
         </form>
-
-        {/* Demo Simulation Controls */}
-        <div className="flex items-center justify-between pt-1 border-t border-[#D8CCAF]/40 text-xs text-[#6A645B]">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-[10px] text-[#315C4C] uppercase font-semibold">
-              Live Demo Controls:
-            </span>
-            <button
-              onClick={onToggleSimulation}
-              className={`px-2 py-0.5 rounded text-[11px] font-medium border ${
-                isSimulating
-                  ? 'bg-[#315C4C] text-[#FFF8E8] border-[#315C4C]'
-                  : 'bg-[#FFF8E8] text-[#1E1B16] border-[#D8CCAF] hover:bg-[#FFEDBF]/60'
-              }`}
-            >
-              {isSimulating ? 'Pause Multi-Device Sim' : 'Resume Sim'}
-            </button>
-            <button
-              onClick={onTriggerOverlap}
-              className="px-2 py-0.5 rounded text-[11px] font-medium border border-[#D8CCAF] bg-[#FFF8E8] text-[#1E1B16] hover:bg-[#FFEDBF]/60"
-            >
-              Inject Simultaneous Speech Overlap
-            </button>
-          </div>
-
-          <span className="font-mono text-[10px] text-[#6A645B] hidden sm:inline">
-            In-place caption revisions preserve timestamps
-          </span>
-        </div>
       </div>
     </div>
   );

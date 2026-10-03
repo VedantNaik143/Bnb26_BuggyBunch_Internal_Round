@@ -6,7 +6,7 @@ import { ParticipantCard } from './ParticipantCard';
 interface ParticipantListProps {
   participants: Participant[];
   onToggleMute: (participantId: string) => void;
-  onSimulateDrop: (participantId: string) => void;
+  onSimulateDrop?: (participantId: string) => void;
   onInviteClick: () => void;
   onSimulateJoin: () => void;
 }
@@ -14,7 +14,6 @@ interface ParticipantListProps {
 export const ParticipantList: React.FC<ParticipantListProps> = ({
   participants,
   onToggleMute,
-  onSimulateDrop,
   onInviteClick,
   onSimulateJoin,
 }) => {
@@ -54,7 +53,6 @@ export const ParticipantList: React.FC<ParticipantListProps> = ({
             participant={participant}
             isSelf={participant.isLocal}
             onToggleMute={onToggleMute}
-            onSimulateDrop={onSimulateDrop}
           />
         ))}
       </div>

@@ -113,17 +113,6 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
             <span className="text-[#6A645B] ml-1">✕ Muted</span>
           )}
         </div>
-
-        {/* Simulate Reconnect action for demo */}
-        {onSimulateDrop && (
-          <button
-            onClick={() => onSimulateDrop(participant.participantId)}
-            className="text-[10px] font-mono text-[#6A645B] hover:text-[#1E1B16] underline decoration-[#D8CCAF]"
-            title="Simulate network jitter / temporary disconnect"
-          >
-            {isConnected ? 'Sim Drop' : 'Reconnect'}
-          </button>
-        )}
       </div>
     </div>
   );

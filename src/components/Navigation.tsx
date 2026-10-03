@@ -1,11 +1,13 @@
 import React from 'react';
-import { Mic2, Radio, BarChart3, PlusCircle, LogIn, Disc3 } from 'lucide-react';
+import { Mic2, Radio, BarChart3, PlusCircle, LogIn, Disc3, History } from 'lucide-react';
 import { Session } from '../types/realtime';
 import { formatTime } from '../lib/formatting';
 
+export type ViewType = 'landing' | 'create' | 'join' | 'room' | 'evaluate' | 'history';
+
 interface NavigationProps {
-  currentView: 'landing' | 'create' | 'join' | 'room' | 'evaluate';
-  onNavigate: (view: 'landing' | 'create' | 'join' | 'room' | 'evaluate') => void;
+  currentView: ViewType;
+  onNavigate: (view: ViewType) => void;
   session: Session | null;
   elapsedSeconds: number;
 }
@@ -16,7 +18,7 @@ export const Navigation: React.FC<NavigationProps> = ({
   session,
   elapsedSeconds,
 }) => {
-  const isRoomLive = session && session.status === 'LIVE';
+  const isRoomLive = Boolean(session && (session.status === 'LIVE' || session.status === 'PAUSED'));
 
   return (
     <header className="sticky top-0 z-40 bg-[#FFF8E8] border-b border-[#D8CCAF]">
@@ -25,7 +27,7 @@ export const Navigation: React.FC<NavigationProps> = ({
         <div className="flex items-center gap-6">
           <button
             onClick={() => onNavigate('landing')}
-            className="flex items-center gap-2.5 text-left group focus:outline-none"
+            className="flex items-center gap-2.5 text-left group focus:outline-none cursor-pointer"
           >
             <div className="w-8 h-8 rounded-lg bg-[#315C4C] text-[#FFF8E8] flex items-center justify-center font-bold shadow-xs transition-transform group-hover:scale-105">
               <Disc3 className="w-4 h-4 animate-spin-slow" />
@@ -44,7 +46,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           <nav className="hidden md:flex items-center gap-1 text-sm font-medium text-[#6A645B]">
             <button
               onClick={() => onNavigate('landing')}
-              className={`px-3 py-1.5 rounded-md transition-colors ${
+              className={`px-3 py-1.5 rounded-md transition-colors cursor-pointer ${
                 currentView === 'landing'
                   ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
                   : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
@@ -55,7 +57,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 
             <button
               onClick={() => onNavigate('create')}
-              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
                 currentView === 'create'
                   ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
                   : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
@@ -67,7 +69,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 
             <button
               onClick={() => onNavigate('join')}
-              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
                 currentView === 'join'
                   ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
                   : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
@@ -77,24 +79,37 @@ export const Navigation: React.FC<NavigationProps> = ({
               Join Room
             </button>
 
+            {/* Live Room link: only show if room is currently active */}
+            {isRoomLive ? (
+              <button
+                onClick={() => onNavigate('room')}
+                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  currentView === 'room'
+                    ? 'text-[#315C4C] bg-[#FFEDBF]/60 font-bold'
+                    : 'text-[#315C4C] hover:bg-[#FFEDBF]/30 font-medium'
+                }`}
+              >
+                <Radio className="w-3.5 h-3.5" />
+                Live Room
+                <span className="w-1.5 h-1.5 rounded-full bg-[#315C4C] animate-pulse ml-0.5" />
+              </button>
+            ) : null}
+
             <button
-              onClick={() => onNavigate('room')}
-              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
-                currentView === 'room'
+              onClick={() => onNavigate('history')}
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
+                currentView === 'history'
                   ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
                   : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
               }`}
             >
-              <Radio className="w-3.5 h-3.5" />
-              Live Room
-              {isRoomLive && (
-                <span className="w-1.5 h-1.5 rounded-full bg-[#315C4C] animate-pulse ml-0.5" />
-              )}
+              <History className="w-3.5 h-3.5" />
+              Previous Sessions
             </button>
 
             <button
               onClick={() => onNavigate('evaluate')}
-              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
                 currentView === 'evaluate'
                   ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
                   : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
@@ -106,20 +121,20 @@ export const Navigation: React.FC<NavigationProps> = ({
           </nav>
         </div>
 
-        {/* Right side: Session Status / Quick Room shortcut */}
+        {/* Right side: Session Status or Start Session CTA */}
         <div className="flex items-center gap-3">
-          {session ? (
+          {isRoomLive && session ? (
             <button
               onClick={() => onNavigate('room')}
-              className="flex items-center gap-2.5 px-3 py-1 rounded-md border border-[#D8CCAF] bg-[#FFEDBF]/40 hover:bg-[#FFEDBF] transition-colors text-left"
+              className="flex items-center gap-2.5 px-3 py-1 rounded-md border border-[#315C4C]/40 bg-[#315C4C]/10 hover:bg-[#315C4C]/20 transition-colors text-left cursor-pointer"
             >
               <div className="flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${session.status === 'LIVE' ? 'bg-[#315C4C] animate-pulse' : 'bg-[#A65A32]'}`} />
-                <span className="text-xs font-semibold text-[#1E1B16] uppercase tracking-wider">
-                  {session.status}
+                <span className="w-2 h-2 rounded-full bg-[#315C4C] animate-pulse" />
+                <span className="text-xs font-semibold text-[#315C4C] uppercase tracking-wider">
+                  LIVE ROOM
                 </span>
               </div>
-              <span className="text-xs text-[#6A645B] font-mono border-l border-[#D8CCAF] pl-2">
+              <span className="text-xs text-[#1E1B16] font-mono border-l border-[#D8CCAF] pl-2 font-bold">
                 {session.joinCode}
               </span>
               <span className="text-xs text-[#6A645B] font-mono hidden sm:inline">
@@ -129,7 +144,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           ) : (
             <button
               onClick={() => onNavigate('create')}
-              className="px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#315C4C] text-[#FFF8E8] hover:bg-[#27493C] transition-colors flex items-center gap-1.5 shadow-xs"
+              className="px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#315C4C] text-[#FFF8E8] hover:bg-[#27493C] transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
             >
               <Mic2 className="w-3.5 h-3.5" />
               Start Session
@@ -158,12 +173,20 @@ export const Navigation: React.FC<NavigationProps> = ({
         >
           Join
         </button>
+        {isRoomLive && (
+          <button
+            onClick={() => onNavigate('room')}
+            className={`px-2 py-1 flex items-center gap-1 ${currentView === 'room' ? 'text-[#315C4C] font-bold' : 'text-[#315C4C]'}`}
+          >
+            Live
+            <span className="w-1.5 h-1.5 rounded-full bg-[#315C4C] animate-pulse" />
+          </button>
+        )}
         <button
-          onClick={() => onNavigate('room')}
-          className={`px-2 py-1 flex items-center gap-1 ${currentView === 'room' ? 'text-[#315C4C] font-bold' : ''}`}
+          onClick={() => onNavigate('history')}
+          className={`px-2 py-1 ${currentView === 'history' ? 'text-[#1E1B16] font-bold' : ''}`}
         >
-          Live Room
-          {isRoomLive && <span className="w-1.5 h-1.5 rounded-full bg-[#315C4C] animate-pulse" />}
+          History
         </button>
         <button
           onClick={() => onNavigate('evaluate')}

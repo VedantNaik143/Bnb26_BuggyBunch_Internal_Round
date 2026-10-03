@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, PlusCircle, LogIn, Mic, Smartphone, Layers, Check, Shield, Zap, Sparkles, AudioWaveform, Radio } from 'lucide-react';
+import { ArrowRight, PlusCircle, LogIn, Mic, Smartphone, Layers, Check, Shield, Zap, Sparkles, AudioWaveform, Radio, History } from 'lucide-react';
 import { RoundtableVisualizer } from '../components/RoundtableVisualizer';
 import { INITIAL_PARTICIPANTS } from '../lib/simulation/mockRoomData';
 
@@ -7,12 +7,14 @@ interface LandingPageProps {
   onCreateSession: () => void;
   onJoinSession: (code?: string) => void;
   onViewEvaluation: () => void;
+  onViewHistory?: () => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onCreateSession,
   onJoinSession,
   onViewEvaluation,
+  onViewHistory,
 }) => {
   const [quickCode, setQuickCode] = useState('');
   const [activeSpeakerIdx, setActiveSpeakerIdx] = useState(1);
@@ -56,7 +58,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
               <button
                 onClick={onCreateSession}
-                className="px-6 py-3.5 rounded-md bg-[#315C4C] text-[#FFF8E8] font-semibold text-sm hover:bg-[#27493C] transition-all flex items-center justify-center gap-2 shadow-xs group"
+                className="px-6 py-3.5 rounded-md bg-[#315C4C] text-[#FFF8E8] font-semibold text-sm hover:bg-[#27493C] transition-all flex items-center justify-center gap-2 shadow-xs group cursor-pointer"
               >
                 <PlusCircle className="w-4 h-4 transition-transform group-hover:scale-110" />
                 Create a Session
@@ -73,12 +75,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 />
                 <button
                   type="submit"
-                  className="px-4 py-3 rounded-md border border-[#D8CCAF] bg-[#FFF8E8] text-[#1E1B16] font-semibold text-sm hover:bg-[#FFEDBF]/60 transition-colors flex items-center gap-1 shadow-2xs"
+                  className="px-4 py-3 rounded-md border border-[#D8CCAF] bg-[#FFF8E8] text-[#1E1B16] font-semibold text-sm hover:bg-[#FFEDBF]/60 transition-colors flex items-center gap-1 shadow-2xs cursor-pointer"
                 >
                   Join
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </form>
+
+              {onViewHistory && (
+                <button
+                  onClick={onViewHistory}
+                  className="px-4 py-3.5 rounded-md border border-[#D8CCAF] bg-[#FFF8E8] text-[#1E1B16] font-semibold text-sm hover:bg-[#FFEDBF]/60 transition-colors flex items-center justify-center gap-2 shadow-2xs cursor-pointer"
+                  title="View concluded sessions and transcripts"
+                >
+                  <History className="w-4 h-4 text-[#315C4C]" />
+                  Previous Sessions
+                </button>
+              )}
             </div>
 
             {/* Quiet metadata notes */}
@@ -239,13 +252,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <span>Distributed Acoustic Fusion Prototype</span>
           </div>
           <div className="flex items-center gap-4">
-            <button onClick={onCreateSession} className="hover:text-[#1E1B16]">
+            <button onClick={onCreateSession} className="hover:text-[#1E1B16] cursor-pointer">
               Create Session
             </button>
-            <button onClick={() => onJoinSession()} className="hover:text-[#1E1B16]">
+            <button onClick={() => onJoinSession()} className="hover:text-[#1E1B16] cursor-pointer">
               Join by Code
             </button>
-            <button onClick={onViewEvaluation} className="hover:text-[#1E1B16]">
+            {onViewHistory && (
+              <button onClick={onViewHistory} className="hover:text-[#1E1B16] cursor-pointer">
+                Previous Sessions
+              </button>
+            )}
+            <button onClick={onViewEvaluation} className="hover:text-[#1E1B16] cursor-pointer">
               Evaluation
             </button>
           </div>

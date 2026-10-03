@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Copy, Check, QrCode, Smartphone, ExternalLink, ShieldCheck } from 'lucide-react';
+import QRCode from 'qrcode';
 
 interface JoinCodeModalProps {
   joinCode: string;
@@ -15,79 +16,37 @@ export const JoinCodeModal: React.FC<JoinCodeModalProps> = ({
   onClose,
 }) => {
   const [copied, setCopied] = useState(false);
-
-  if (!isOpen) return null;
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   const joinUrl = `${window.location.origin}?room=${joinCode}`;
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    QRCode.toDataURL(joinUrl, {
+      width: 256,
+      margin: 1,
+      color: {
+        dark: '#1E1B16',
+        light: '#FFF8E8',
+      },
+      errorCorrectionLevel: 'M',
+    })
+      .then((url) => {
+        setQrDataUrl(url);
+      })
+      .catch((err) => {
+        console.error('Error generating QR code:', err);
+      });
+  }, [joinUrl, isOpen]);
+
+  if (!isOpen) return null;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(joinUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
-  // Generate deterministic QR matrix pattern based on joinCode
-  const generateQrMatrix = (code: string) => {
-    const size = 21;
-    const matrix: boolean[][] = Array(size)
-      .fill(false)
-      .map(() => Array(size).fill(false));
-
-    // Finder patterns (top-left, top-right, bottom-left 7x7)
-    const placeFinder = (r: number, c: number) => {
-      for (let i = 0; i < 7; i++) {
-        for (let j = 0; j < 7; j++) {
-          if (
-            i === 0 ||
-            i === 6 ||
-            j === 0 ||
-            j === 6 ||
-            (i >= 2 && i <= 4 && j >= 2 && j <= 4)
-          ) {
-            matrix[r + i][c + j] = true;
-          }
-        }
-      }
-    };
-
-    placeFinder(0, 0);
-    placeFinder(0, size - 7);
-    placeFinder(size - 7, 0);
-
-    // Timing patterns
-    for (let i = 8; i < size - 8; i++) {
-      if (i % 2 === 0) {
-        matrix[6][i] = true;
-        matrix[i][6] = true;
-      }
-    }
-
-    // Pseudorandom data cells keyed on joinCode
-    let hash = 0;
-    for (let i = 0; i < code.length; i++) {
-      hash = (hash * 31 + code.charCodeAt(i)) & 0xffffffff;
-    }
-
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size; c++) {
-        // Skip finder areas
-        if (
-          (r < 8 && c < 8) ||
-          (r < 8 && c >= size - 8) ||
-          (r >= size - 8 && c < 8) ||
-          (r === 6 || c === 6)
-        ) {
-          continue;
-        }
-        hash = (hash * 1103515245 + 12345) & 0x7fffffff;
-        matrix[r][c] = (hash % 3) === 0;
-      }
-    }
-
-    return matrix;
-  };
-
-  const qrMatrix = generateQrMatrix(joinCode);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1E1B16]/40 backdrop-blur-xs animate-fade-in">
@@ -117,28 +76,19 @@ export const JoinCodeModal: React.FC<JoinCodeModalProps> = ({
 
         {/* QR Code and Code Block */}
         <div className="flex flex-col items-center justify-center p-4 bg-[#FFEDBF]/50 border border-[#D8CCAF] rounded-md my-4">
-          {/* SVG QR Code */}
+          {/* Real Scannable QR Code */}
           <div className="p-3 bg-[#FFF8E8] border border-[#D8CCAF] rounded-md shadow-xs mb-4">
-            <svg
-              viewBox="0 0 21 21"
-              className="w-36 h-36 shape-rendering-crispEdges"
-              style={{ shapeRendering: 'crispEdges' }}
-            >
-              {qrMatrix.map((row, r) =>
-                row.map((active, c) =>
-                  active ? (
-                    <rect
-                      key={`${r}-${c}`}
-                      x={c}
-                      y={r}
-                      width={1}
-                      height={1}
-                      fill="#1E1B16"
-                    />
-                  ) : null
-                )
-              )}
-            </svg>
+            {qrDataUrl ? (
+              <img
+                src={qrDataUrl}
+                alt={`Scan QR Code to join session ${joinCode}`}
+                className="w-36 h-36 rounded-xs"
+              />
+            ) : (
+              <div className="w-36 h-36 flex items-center justify-center text-xs font-mono text-[#6A645B]">
+                Generating QR...
+              </div>
+            )}
           </div>
 
           <p className="text-xs text-[#6A645B] text-center mb-2 flex items-center gap-1.5">
@@ -162,32 +112,32 @@ export const JoinCodeModal: React.FC<JoinCodeModalProps> = ({
               type="text"
               readOnly
               value={joinUrl}
-              className="flex-1 text-xs font-mono bg-[#FFF8E8] border border-[#D8CCAF] rounded-md px-3 py-2 text-[#1E1B16] select-all focus:outline-none focus:ring-1 focus:ring-[#315C4C]"
+              className="flex-1 bg-[#FFF8E8] border border-[#D8CCAF] rounded-md px-3 py-1.5 text-xs font-mono text-[#1E1B16] select-all focus:outline-none"
             />
             <button
               onClick={handleCopy}
-              className="px-3 py-2 text-xs font-medium bg-[#315C4C] text-[#FFF8E8] rounded-md hover:bg-[#27493C] transition-colors flex items-center gap-1.5 shadow-xs shrink-0"
+              className="px-3 py-1.5 bg-[#1E1B16] text-[#FFEDBF] text-xs font-medium rounded-md hover:bg-[#3E382F] transition-colors flex items-center gap-1.5 shrink-0"
             >
               {copied ? (
                 <>
-                  <Check className="w-3.5 h-3.5" />
-                  Copied
+                  <Check className="w-3.5 h-3.5 text-[#315C4C]" />
+                  <span>Copied</span>
                 </>
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5" />
-                  Copy Link
+                  <span>Copy Link</span>
                 </>
               )}
             </button>
           </div>
         </div>
 
-        {/* Spatial Tips */}
+        {/* Instructions */}
         <div className="mt-4 pt-3 border-t border-[#D8CCAF]/60 flex items-start gap-2 text-xs text-[#6A645B]">
           <ShieldCheck className="w-4 h-4 text-[#315C4C] shrink-0 mt-0.5" />
-          <p className="leading-relaxed">
-            <strong>Optimal Acoustic Fusion:</strong> Place devices 1–2 meters apart on the table facing upward. No app download or sign-up required.
+          <p>
+            Place each phone on the conference table. Each device streams raw audio to the fusion mesh for speaker attribution.
           </p>
         </div>
       </div>
