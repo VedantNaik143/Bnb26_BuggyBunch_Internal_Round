@@ -132,23 +132,29 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       },
       onCaptionUpdated: (segment, metrics) => {
         setActiveSpeakerId(segment.speakerId);
-        updateSessionStateRef.current((prev) => ({
-          ...prev,
-          transcriptSegments: prev.transcriptSegments.map((s) =>
-            s.segmentId === segment.segmentId ? segment : s
-          ),
-          metrics: metrics || prev.metrics,
-        }));
+        updateSessionStateRef.current((prev) => {
+          const exists = prev.transcriptSegments.some((s) => s.segmentId === segment.segmentId);
+          return {
+            ...prev,
+            transcriptSegments: exists
+              ? prev.transcriptSegments.map((s) => (s.segmentId === segment.segmentId ? segment : s))
+              : [...prev.transcriptSegments, segment],
+            metrics: metrics || prev.metrics,
+          };
+        });
       },
       onCaptionFinal: (segment, metrics) => {
         setActiveSpeakerId(segment.speakerId);
-        updateSessionStateRef.current((prev) => ({
-          ...prev,
-          transcriptSegments: prev.transcriptSegments.map((s) =>
-            s.segmentId === segment.segmentId ? segment : s
-          ),
-          metrics: metrics || prev.metrics,
-        }));
+        updateSessionStateRef.current((prev) => {
+          const exists = prev.transcriptSegments.some((s) => s.segmentId === segment.segmentId);
+          return {
+            ...prev,
+            transcriptSegments: exists
+              ? prev.transcriptSegments.map((s) => (s.segmentId === segment.segmentId ? segment : s))
+              : [...prev.transcriptSegments, segment],
+            metrics: metrics || prev.metrics,
+          };
+        });
       },
       onOverlapDetected: (groupId, speakerId, metrics) => {
         updateSessionStateRef.current((prev) => ({
@@ -721,27 +727,33 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
 
             {/* Microphone Permission Banner if not active */}
             {!isMicStarted && (
-              <div className="bg-[#315C4C] text-[#FFF8E8] p-3.5 rounded-lg shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border border-[#27493C] animate-fade-in">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-[#FFF8E8]/20 flex items-center justify-center shrink-0">
-                    <Mic className="w-4 h-4 text-[#FFF8E8]" />
+              <div className="bg-[#315C4C] text-[#FFF8E8] p-4 rounded-lg shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border border-[#27493C] animate-fade-in">
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-full bg-[#FFF8E8]/20 flex items-center justify-center shrink-0 mt-0.5">
+                    <Mic className="w-5 h-5 text-[#FFF8E8]" />
                   </div>
                   <div>
                     <h4 className="text-xs font-bold uppercase tracking-wider">
-                      Microphone Permission Required
+                      Microphone Permission Required (Mobile &amp; Desktop)
                     </h4>
-                    <p className="text-[11px] text-[#FFF8E8]/90 mt-0.5">
-                      {micErrorMessage || 'Click below to grant microphone access so Roundtable can transcribe your speech in real time.'}
+                    <p className="text-[11px] text-[#FFF8E8]/90 mt-0.5 leading-relaxed">
+                      {micErrorMessage || 'Tap or click below to grant microphone access so your device captures and streams audio to the shared session in real time.'}
                     </p>
+                    {typeof window !== 'undefined' && !window.isSecureContext && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && (
+                      <div className="mt-2 p-2 bg-[#FFF8E8]/10 rounded border border-[#FFF8E8]/20 text-[10px] text-[#FFEDBF]">
+                        <strong>Mobile Tip:</strong> iOS Safari and Android Chrome require HTTPS to access the microphone over LAN. If on phone, open with <code>https://</code> or enable &quot;Insecure origins treated as secure&quot; in <em>chrome://flags</em>.
+                      </div>
+                    )}
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={startMicrophone}
-                  className="px-4 py-2 bg-[#FFF8E8] text-[#315C4C] font-bold text-xs rounded-md shadow-xs hover:bg-[#FFEDBF] transition-all shrink-0 cursor-pointer flex items-center gap-1.5"
+                  onPointerDown={startMicrophone}
+                  className="w-full sm:w-auto px-5 py-2.5 bg-[#FFF8E8] text-[#315C4C] font-bold text-xs rounded-md shadow-xs hover:bg-[#FFEDBF] active:scale-95 transition-all shrink-0 cursor-pointer flex items-center justify-center gap-2"
                 >
-                  <Mic className="w-3.5 h-3.5" />
-                  Enable Microphone
+                  <Mic className="w-4 h-4 text-[#315C4C]" />
+                  <span>Enable Microphone</span>
                 </button>
               </div>
             )}

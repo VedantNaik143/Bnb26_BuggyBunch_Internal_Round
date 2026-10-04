@@ -44,10 +44,11 @@ export class RealtimeClient {
       }
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // When running under Vite dev server (port 3000), connect directly to FastAPI backend on port 8000
-    // to bypass Node.js ws proxy aborts and stream PCM audio with lowest latency
-    const wsHost = window.location.port === '3000'
+    const isHttps = window.location.protocol === 'https:';
+    const protocol = isHttps ? 'wss:' : 'ws:';
+    // When running under HTTPS, route through Vite proxy (/ws/...) to terminate SSL cleanly.
+    // When running under plain HTTP in dev (port 3000), connect directly to FastAPI on port 8000.
+    const wsHost = (!isHttps && window.location.port === '3000')
       ? `${window.location.hostname}:8000`
       : window.location.host;
     const wsUrl = `${protocol}//${wsHost}/ws/sessions/${sessionId}/${participantId}`;

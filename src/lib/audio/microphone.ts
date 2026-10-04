@@ -47,15 +47,23 @@ export class BrowserMicrophone implements MicController {
     try {
       let stream: MediaStream | null = null;
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-          video: false,
-        });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: false,
+          });
+        } catch {
+          // Mobile Safari or strict mobile drivers can throw OverconstrainedError on audio sub-properties
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+        }
       } else {
         // Fallback for older browsers or legacy WebKit
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
