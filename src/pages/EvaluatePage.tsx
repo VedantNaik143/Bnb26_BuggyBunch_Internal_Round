@@ -72,7 +72,9 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
       return [];
     }
     return session.transcriptSegments.map((seg) => {
-      const elapsedSec = (seg.startMs / 1000).toFixed(1);
+      const sessionStart = session.startedAt || session.createdAt || 0;
+      const rawMs = seg.startMs > sessionStart ? seg.startMs - sessionStart : seg.startMs;
+      const elapsedSec = Math.max(0.1, rawMs > 0 ? rawMs / 1000 : 0.1).toFixed(1);
       const participant = session.participants.find((p) => p.participantId === seg.speakerId);
       const deviceLabel = participant?.deviceLabel || (participant?.isLocal ? 'Local Device' : 'Microphone');
 
