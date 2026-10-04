@@ -68,6 +68,28 @@ export async function startSessionApi(sessionId: string): Promise<Session> {
   return data.session;
 }
 
+export async function pauseSessionApi(sessionId: string): Promise<Session> {
+  const res = await fetch(`/api/sessions/${sessionId}/pause`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to pause session: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.session;
+}
+
+export async function resumeSessionApi(sessionId: string): Promise<Session> {
+  const res = await fetch(`/api/sessions/${sessionId}/resume`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to resume session: ${res.statusText}`);
+  }
+  const data = await res.json();
+  return data.session;
+}
+
 export async function stopSessionApi(sessionId: string): Promise<Session> {
   const res = await fetch(`/api/sessions/${sessionId}/stop`, {
     method: 'POST',

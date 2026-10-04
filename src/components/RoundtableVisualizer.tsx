@@ -99,8 +99,11 @@ export const RoundtableVisualizer: React.FC<RoundtableVisualizerProps> = ({
           )}
 
           {/* Rays connecting each device to the central fusion hub */}
-          {participants.map((p) => {
-            const rad = ((p.tableAngle - 90) * Math.PI) / 180;
+          {participants.map((p, index) => {
+            const angle = (typeof p.tableAngle === 'number' && !isNaN(p.tableAngle) && p.tableAngle > 0)
+              ? p.tableAngle
+              : ((index * (360 / Math.max(1, participants.length)) + 270) % 360);
+            const rad = ((angle - 90) * Math.PI) / 180;
             const x = center + radius * Math.cos(rad);
             const y = center + radius * Math.sin(rad);
             const isActive = p.participantId === activeSpeakerId;
@@ -142,8 +145,11 @@ export const RoundtableVisualizer: React.FC<RoundtableVisualizerProps> = ({
         </div>
 
         {/* Participant Device Nodes around Table */}
-        {participants.map((p) => {
-          const rad = ((p.tableAngle - 90) * Math.PI) / 180;
+        {participants.map((p, index) => {
+          const angle = (typeof p.tableAngle === 'number' && !isNaN(p.tableAngle) && p.tableAngle > 0)
+            ? p.tableAngle
+            : ((index * (360 / Math.max(1, participants.length)) + 270) % 360);
+          const rad = ((angle - 90) * Math.PI) / 180;
           const x = center + radius * Math.cos(rad);
           const y = center + radius * Math.sin(rad);
           const isActive = p.participantId === activeSpeakerId;

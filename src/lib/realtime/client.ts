@@ -1,4 +1,4 @@
-import { CaptionSegment, Participant, Session, SessionMetrics } from '../../types/realtime';
+import { CaptionSegment, ConversationThread, Participant, Session, SessionMetrics } from '../../types/realtime';
 
 export interface RealtimeClientCallbacks {
   onSessionSync?: (session: Session) => void;
@@ -10,6 +10,9 @@ export interface RealtimeClientCallbacks {
   onCaptionUpdated?: (segment: CaptionSegment, metrics?: SessionMetrics) => void;
   onCaptionFinal?: (segment: CaptionSegment, metrics?: SessionMetrics) => void;
   onOverlapDetected?: (groupId: string, speakerId: string, metrics?: SessionMetrics) => void;
+  onSessionPaused?: (sessionId: string) => void;
+  onSessionResumed?: (sessionId: string) => void;
+  onConversationThreadsUpdated?: (threads: ConversationThread[]) => void;
   onMicStarted?: (participantId: string) => void;
   onMicStopped?: (participantId: string) => void;
   onConnectionStatus?: (status: 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'ERROR') => void;
@@ -42,8 +45,12 @@ export class RealtimeClient {
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Use host (handles Vite proxy) or fallback to localhost:8000
-    const wsUrl = `${protocol}//${window.location.host}/ws/sessions/${sessionId}/${participantId}`;
+    // When running under Vite dev server (port 3000), connect directly to FastAPI backend on port 8000
+    // to bypass Node.js ws proxy aborts and stream PCM audio with lowest latency
+    const wsHost = window.location.port === '3000'
+      ? `${window.location.hostname}:8000`
+      : window.location.host;
+    const wsUrl = `${protocol}//${wsHost}/ws/sessions/${sessionId}/${participantId}`;
 
     this.callbacks.onConnectionStatus?.('CONNECTING');
 
@@ -67,21 +74,61 @@ export class RealtimeClient {
         }
       };
 
-      this.socket.onclose = () => {
+      this.socket.onclose = async (event: CloseEvent) => {
         this.stopHeartbeat();
         this.callbacks.onConnectionStatus?.('DISCONNECTED');
+
+        console.warn(
+          `[Roundtable WS Connection Closed]\n` +
+          `  URL: ${wsUrl}\n` +
+          `  Close Code: ${event.code}\n` +
+          `  Close Reason: ${event.reason || '(none)'}\n` +
+          `  Clean: ${event.wasClean}`
+        );
+
+        // Check backend session and participant existence
+        try {
+          const checkRes = await fetch(`/api/sessions/${this.sessionId}`);
+          if (checkRes.ok) {
+            const data = await checkRes.json();
+            const session = data.session;
+            const hasParticipant = session?.participants?.some(
+              (p: { participantId: string }) => p.participantId === this.participantId
+            );
+            console.info(
+              `[Roundtable WS Diagnostic]\n` +
+              `  Backend connection: SUCCESS (HTTP 200)\n` +
+              `  Session exists: YES (Status: ${session?.status})\n` +
+              `  Participant exists: ${hasParticipant ? 'YES' : 'NO'}`
+            );
+          } else {
+            console.warn(
+              `[Roundtable WS Diagnostic]\n` +
+              `  Backend connection: HTTP ${checkRes.status}\n` +
+              `  Session exists: NO`
+            );
+          }
+        } catch (fetchErr) {
+          console.warn('[Roundtable WS Diagnostic] Backend reachable: NO (FastAPI backend may be offline)', fetchErr);
+        }
+
+        // If session closed permanently (code 4004), do not reconnect
+        if (event.code === 4004) {
+          console.warn('[Roundtable WS] Session not found. Reconnect aborted.');
+          return;
+        }
+
         if (!this.intentionalClose) {
-          // Attempt automatic reconnect with same participantId
           this.scheduleReconnect();
         }
       };
 
       this.socket.onerror = (err) => {
-        console.warn('WebSocket connection error:', err);
+        console.warn(`[Roundtable WS] Socket error on ${wsUrl}:`, err);
         this.callbacks.onConnectionStatus?.('ERROR');
       };
     } catch (e) {
-      console.warn('WebSocket exception:', e);
+      console.warn(`[Roundtable WS] Failed connecting to ${wsUrl}:`, e);
       this.scheduleReconnect();
     }
   }
@@ -170,6 +217,20 @@ export class RealtimeClient {
         }
         break;
 
+      case 'SESSION_PAUSED':
+        this.callbacks.onSessionPaused?.((data.sessionId as string) || this.sessionId);
+        break;
+
+      case 'SESSION_RESUMED':
+        this.callbacks.onSessionResumed?.((data.sessionId as string) || this.sessionId);
+        break;
+
+      case 'CONVERSATION_THREADS_UPDATED':
+        if (data.threads) {
+          this.callbacks.onConversationThreadsUpdated?.(data.threads as ConversationThread[]);
+        }
+        break;
+
       case 'MIC_STARTED':
         if (data.participantId) {
           this.callbacks.onMicStarted?.(data.participantId as string);
@@ -199,6 +260,14 @@ export class RealtimeClient {
 
   sendMicStopped() {
     this.sendJson({ type: 'MIC_STOPPED' });
+  }
+
+  sendPauseSession() {
+    this.sendJson({ type: 'SESSION_PAUSED' });
+  }
+
+  sendResumeSession() {
+    this.sendJson({ type: 'SESSION_RESUMED' });
   }
 
   sendStopSession() {

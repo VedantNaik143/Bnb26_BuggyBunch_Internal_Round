@@ -23,7 +23,6 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
   const [peakDetected, setPeakDetected] = useState(false);
   const micRef = useRef<BrowserMicrophone | null>(null);
   const animFrameRef = useRef<number | null>(null);
-  const simIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
     const mic = new BrowserMicrophone();
@@ -32,10 +31,13 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
     mic.start().then((success) => {
       if (success) {
         setIsLiveMic(true);
+        setMicError(null);
         startPolling();
       } else {
-        setMicError(mic.getError() || 'Could not access browser microphone. Using mock acoustic stream.');
-        startSimulatedPolling();
+        setIsLiveMic(false);
+        setMicError(
+          mic.getError() || 'Microphone permission required. Click "Allow Microphone & Test" below.'
+        );
       }
     });
 
@@ -43,19 +45,11 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
       if (animFrameRef.current) {
         cancelAnimationFrame(animFrameRef.current);
       }
-      if (simIntervalRef.current) {
-        clearInterval(simIntervalRef.current);
-        simIntervalRef.current = null;
-      }
       mic.stop();
     };
   }, []);
 
   const startPolling = () => {
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-      simIntervalRef.current = null;
-    }
     const poll = () => {
       if (micRef.current) {
         const lvl = micRef.current.getAudioLevel();
@@ -70,19 +64,6 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
     animFrameRef.current = requestAnimationFrame(poll);
   };
 
-  const startSimulatedPolling = () => {
-    if (simIntervalRef.current) {
-      clearInterval(simIntervalRef.current);
-    }
-    let t = 0;
-    simIntervalRef.current = window.setInterval(() => {
-      t += 0.2;
-      const wave = Math.sin(t) * 20 + 25 + Math.random() * 10;
-      setAudioLevel(Math.max(0, Math.min(100, Math.round(wave))));
-      setTestSuccess(true);
-    }, 100);
-  };
-
   const handleRetryMic = async () => {
     if (micRef.current) {
       micRef.current.stop();
@@ -95,7 +76,8 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
       setMicError(null);
       startPolling();
     } else {
-      setMicError(mic.getError() || 'Microphone unavailable. Demo simulation active.');
+      setIsLiveMic(false);
+      setMicError(mic.getError() || 'Microphone access denied. Please allow microphone permissions in your browser settings.');
     }
   };
 
@@ -123,11 +105,12 @@ export const AudioCheckModal: React.FC<AudioCheckModalProps> = ({
               <p className="font-semibold">Hardware mic access note:</p>
               <p className="mt-0.5 text-[#6A645B]">{micError}</p>
               <button
+                type="button"
                 onClick={handleRetryMic}
-                className="mt-2 text-xs font-medium text-[#315C4C] hover:underline flex items-center gap-1"
+                className="mt-3 px-3 py-1.5 bg-[#315C4C] text-[#FFF8E8] rounded text-xs font-semibold hover:bg-[#27493C] transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
               >
-                <RefreshCw className="w-3 h-3" />
-                Retry hardware mic permission
+                <RefreshCw className="w-3.5 h-3.5" />
+                Allow Microphone &amp; Test Audio
               </button>
             </div>
           </div>

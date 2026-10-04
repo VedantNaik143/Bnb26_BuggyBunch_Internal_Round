@@ -10,6 +10,7 @@ logger = logging.getLogger("audio_router")
 class AudioRouter:
     def __init__(self, speech_provider: GeminiLiveSpeechProvider):
         self.speech_provider = speech_provider
+        self.chunk_counts: dict[str, int] = {}
 
     async def handle_pcm_chunk(
         self,
@@ -24,6 +25,21 @@ class AudioRouter:
         Returns:
             (audio_level_0_to_100, quality_score, quality_tier)
         """
+        key = f"{session_id}:{participant_id}"
+        self.chunk_counts[key] = self.chunk_counts.get(key, 0) + 1
+        count = self.chunk_counts[key]
+
+        # Log chunk metrics (first 5 chunks, then every 50 chunks)
+        if count <= 5 or count % 50 == 0:
+            duration_ms = len(pcm_bytes) // 32  # 16000Hz * 1ch * 2bytes/sample = 32 bytes/ms
+            logger.info(
+                f"[AudioRouter] audio chunks received: {count} | "
+                f"bytes received: {len(pcm_bytes)} | "
+                f"participant_id: {participant_id} | "
+                f"sample format: mono PCM16 16000Hz | "
+                f"chunk duration: {duration_ms}ms"
+            )
+
         # Analyze signal
         rms, level, tier, score = AudioQualityAnalyzer.analyze_pcm16(pcm_bytes)
 

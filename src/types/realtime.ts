@@ -10,6 +10,21 @@ export type CaptionConfidence = 'high' | 'medium' | 'low';
 
 export type DeviceType = 'mobile' | 'laptop' | 'desktop' | 'tablet';
 
+export type ThreadType = 'MAIN_CONVERSATION' | 'SIDE_CONVERSATION' | 'OVERLAP' | 'UNKNOWN';
+
+export interface ConversationThread {
+  threadId: string;
+  threadType: ThreadType;
+  speakerIds: string[];
+  speakerNames: string[];
+  startTime: number;
+  lastUpdate: number;
+  recentSegments: (CaptionSegment | string)[];
+  topic: string;
+  summary: string;
+  confidence: string | number;
+}
+
 export interface Participant {
   participantId: string;
   displayName: string;
@@ -43,6 +58,8 @@ export interface CaptionSegment {
   createdAt: number;
   updatedAt: number;
   duplicateSourcesCount?: number;
+  corroboratingDevices?: string[];
+  engine?: string; // 'GEMINI_LIVE' | 'LOCAL_FALLBACK' | 'DEMO'
 }
 
 export interface SessionMetrics {
@@ -68,12 +85,15 @@ export interface Session {
   participants: Participant[];
   transcriptSegments: CaptionSegment[];
   metrics: SessionMetrics;
+  threads?: ConversationThread[];
+  activeEngine?: string;
 }
 
 export type EventType =
   | 'SESSION_CREATED'
   | 'SESSION_STARTED'
   | 'SESSION_PAUSED'
+  | 'SESSION_RESUMED'
   | 'SESSION_STOPPED'
   | 'PARTICIPANT_JOINED'
   | 'PARTICIPANT_LEFT'
@@ -87,6 +107,7 @@ export type EventType =
   | 'CAPTION_UPDATED'
   | 'CAPTION_FINAL'
   | 'OVERLAP_DETECTED'
+  | 'CONVERSATION_THREADS_UPDATED'
   | 'ERROR';
 
 export interface RoomEvent {
@@ -95,3 +116,4 @@ export interface RoomEvent {
   timestampMs: number;
   data: Record<string, unknown>;
 }
+

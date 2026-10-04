@@ -45,37 +45,70 @@ export class BrowserMicrophone implements MicController {
     this.sequenceNumber = 0;
 
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Microphone mediaDevices API not supported in this browser.');
+      let stream: MediaStream | null = null;
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+      } else {
+        // Fallback for older browsers or legacy WebKit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const legacyNav = navigator as any;
+        const getUserMedia =
+          legacyNav.getUserMedia ||
+          legacyNav.webkitGetUserMedia ||
+          legacyNav.mozGetUserMedia ||
+          legacyNav.msGetUserMedia;
+        if (getUserMedia) {
+          stream = await new Promise<MediaStream>((resolve, reject) => {
+            getUserMedia.call(
+              navigator,
+              { audio: true, video: false },
+              resolve,
+              reject
+            );
+          });
+        } else {
+          const isLocal =
+            window.location.hostname === 'localhost' ||
+            window.location.hostname === '127.0.0.1';
+          if (!isLocal && !window.isSecureContext) {
+            throw new Error(
+              'Microphone access on mobile / LAN devices requires a secure context (HTTPS or localhost). Please open over HTTPS or enable "Insecure origins treated as secure" in chrome://flags.'
+            );
+          }
+          throw new Error('Microphone audio capture is not supported in this browser.');
+        }
       }
 
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
+      this.mediaStream = stream;
 
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) {
+        throw new Error('Web Audio API (AudioContext) is not supported in this browser.');
+      }
       this.audioContext = new AudioCtx();
 
-      // Ensure AudioContext is unlocked
+      // Ensure AudioContext is unlocked without blocking on autoplay restrictions
+      const tryResume = () => {
+        if (this.audioContext && this.audioContext.state === 'suspended') {
+          this.audioContext.resume().catch(() => {});
+        }
+      };
       if (this.audioContext.state === 'suspended') {
-        const unlock = () => {
-          if (this.audioContext && this.audioContext.state === 'suspended') {
-            this.audioContext.resume();
-          }
-          document.removeEventListener('click', unlock);
-          document.removeEventListener('touchstart', unlock);
-        };
-        document.addEventListener('click', unlock);
-        document.addEventListener('touchstart', unlock);
-        await this.audioContext.resume();
+        window.addEventListener('click', tryResume, { passive: true });
+        window.addEventListener('pointerdown', tryResume, { passive: true });
+        window.addEventListener('touchstart', tryResume, { passive: true });
+        window.addEventListener('keydown', tryResume, { passive: true });
+        tryResume();
       }
 
       const inputSampleRate = this.audioContext.sampleRate;
@@ -95,6 +128,10 @@ export class BrowserMicrophone implements MicController {
       this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
 
       this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        // Mute speaker output buffer so audio is never routed to local speakers (prevents echo/feedback)
+        const outputChannelData = e.outputBuffer.getChannelData(0);
+        outputChannelData.fill(0);
+
         if (!this.listening || this.muted) {
           this.currentRms = 0;
           return;
@@ -151,6 +188,11 @@ export class BrowserMicrophone implements MicController {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           rec.onerror = (e: any) => {
             console.debug('Browser speech recognition notice:', e.error);
+            if (e.error === 'no-speech' && this.listening && !this.muted) {
+              try {
+                rec.start();
+              } catch {}
+            }
           };
 
           rec.onend = () => {
@@ -163,7 +205,16 @@ export class BrowserMicrophone implements MicController {
             }
           };
 
-          rec.start();
+          // Short delay to let media stream audio tracks settle before starting browser recognizer
+          setTimeout(() => {
+            if (this.listening && !this.muted) {
+              try {
+                rec.start();
+              } catch (e) {
+                console.debug('Speech recognition start notice:', e);
+              }
+            }
+          }, 100);
           this.recognition = rec;
         } catch (e) {
           console.debug('Browser speech recognition initialization notice:', e);
@@ -283,6 +334,10 @@ export class BrowserMicrophone implements MicController {
   getAudioLevel(): number {
     if (!this.listening || this.muted) {
       return 0;
+    }
+
+    if (this.audioContext && this.audioContext.state === 'suspended') {
+      this.audioContext.resume().catch(() => {});
     }
 
     if (this.analyser && this.timeDomainBuffer) {

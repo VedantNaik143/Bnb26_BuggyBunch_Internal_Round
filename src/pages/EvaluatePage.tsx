@@ -22,20 +22,37 @@ export const EvaluatePage: React.FC<EvaluatePageProps> = ({ session, onBack }) =
   const [realLogs, setRealLogs] = useState<DecisionLog[]>([]);
   const [isLiveTelemetry, setIsLiveTelemetry] = useState(false);
 
+  const isLive = Boolean(
+    session &&
+    (session.status === 'LIVE' || session.status === 'PAUSED' || session.status === 'STOPPED') &&
+    !session.sessionId.includes('demo')
+  );
+
   useEffect(() => {
-    if (session?.sessionId && !session.sessionId.includes('demo')) {
+    if (!session?.sessionId || session.sessionId.includes('demo')) return;
+
+    const fetchEval = () => {
       getEvaluationApi(session.sessionId)
         .then((data) => {
-          if (data && data.decisionLogs && data.decisionLogs.length > 0) {
-            setRealLogs(data.decisionLogs);
-            setIsLiveTelemetry(true);
+          if (data) {
+            if (data.decisionLogs) {
+              setRealLogs(data.decisionLogs);
+              setIsLiveTelemetry(true);
+            }
           }
         })
         .catch(() => {
-          // ignore if backend not available
+          // ignore if backend offline
         });
+    };
+
+    fetchEval();
+
+    if (session.status === 'LIVE' || session.status === 'PAUSED') {
+      const interval = setInterval(fetchEval, 2000);
+      return () => clearInterval(interval);
     }
-  }, [session?.sessionId]);
+  }, [session?.sessionId, session?.status]);
 
   const metrics: SessionMetrics = session?.metrics || {
     medianLatencyMs: 0,

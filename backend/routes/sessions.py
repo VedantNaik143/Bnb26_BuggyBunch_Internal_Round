@@ -93,6 +93,24 @@ async def start_session(session_id: str):
     await manager.broadcast_to_session(session_id, "SESSION_STARTED", {"sessionId": session_id})
     return {"session": session.model_dump()}
 
+@router.post("/{session_id}/pause")
+async def pause_session(session_id: str):
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.status = "PAUSED"
+    await manager.broadcast_to_session(session_id, "SESSION_PAUSED", {"sessionId": session_id})
+    return {"session": session.model_dump()}
+
+@router.post("/{session_id}/resume")
+async def resume_session(session_id: str):
+    session = store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.status = "LIVE"
+    await manager.broadcast_to_session(session_id, "SESSION_RESUMED", {"sessionId": session_id})
+    return {"session": session.model_dump()}
+
 @router.post("/{session_id}/stop")
 async def stop_session(session_id: str):
     session = store.get_session(session_id)

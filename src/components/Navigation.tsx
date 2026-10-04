@@ -95,17 +95,19 @@ export const Navigation: React.FC<NavigationProps> = ({
               </button>
             ) : null}
 
-            <button
-              onClick={() => onNavigate('history')}
-              className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
-                currentView === 'history'
-                  ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
-                  : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
-              }`}
-            >
-              <History className="w-3.5 h-3.5" />
-              Previous Sessions
-            </button>
+            {currentView !== 'landing' && (
+              <button
+                onClick={() => onNavigate('history')}
+                className={`px-3 py-1.5 rounded-md transition-colors flex items-center gap-1.5 cursor-pointer ${
+                  currentView === 'history'
+                    ? 'text-[#1E1B16] bg-[#FFEDBF]/60 font-semibold'
+                    : 'hover:text-[#1E1B16] hover:bg-[#FFEDBF]/30'
+                }`}
+              >
+                <History className="w-3.5 h-3.5" />
+                Previous Sessions
+              </button>
+            )}
 
             <button
               onClick={() => onNavigate('evaluate')}

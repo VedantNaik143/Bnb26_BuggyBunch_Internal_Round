@@ -44,15 +44,46 @@ export const CaptionSegmentItem: React.FC<CaptionSegmentItemProps> = ({
             {segment.sourceDeviceId}
           </span>
 
-          {/* Deduplication tag if multiple devices contributed */}
-          {segment.duplicateSourcesCount && segment.duplicateSourcesCount > 1 && (
+          {/* Engine indicator */}
+          {segment.engine && (
             <>
               <span aria-hidden="true" className="text-[#D8CCAF]">
                 ·
               </span>
-              <span className="text-[10px] text-[#315C4C] font-mono flex items-center gap-1">
+              <span
+                className={`text-[9px] font-mono px-1.5 py-0.5 rounded ${
+                  segment.engine === 'GEMINI_LIVE'
+                    ? 'bg-[#315C4C]/10 text-[#315C4C]'
+                    : segment.engine === 'LOCAL_FALLBACK'
+                    ? 'bg-[#A65A32]/15 text-[#A65A32]'
+                    : 'bg-[#6A645B]/10 text-[#6A645B]'
+                }`}
+              >
+                {segment.engine === 'GEMINI_LIVE'
+                  ? 'GEMINI LIVE'
+                  : segment.engine === 'LOCAL_FALLBACK'
+                  ? 'LOCAL FALLBACK'
+                  : segment.engine}
+              </span>
+            </>
+          )}
+
+          {/* Corroboration badge if multiple devices contributed */}
+          {((segment.corroboratingDevices && segment.corroboratingDevices.length > 1) ||
+            (segment.duplicateSourcesCount && segment.duplicateSourcesCount > 1)) && (
+            <>
+              <span aria-hidden="true" className="text-[#D8CCAF]">
+                ·
+              </span>
+              <span className="text-[10px] text-[#315C4C] font-mono flex items-center gap-1 bg-[#315C4C]/10 px-1.5 py-0.5 rounded font-semibold">
                 <Layers className="w-3 h-3" />
-                Fused from {segment.duplicateSourcesCount} mics
+                {segment.corroboratingDevices?.length || segment.duplicateSourcesCount} devices corroborating
+              </span>
+              <span aria-hidden="true" className="text-[#D8CCAF]">
+                ·
+              </span>
+              <span className="text-[10px] text-[#315C4C] font-mono capitalize">
+                {segment.confidence} confidence
               </span>
             </>
           )}

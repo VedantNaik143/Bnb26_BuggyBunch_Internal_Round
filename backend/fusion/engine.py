@@ -1,17 +1,21 @@
 import time
-from typing import Optional, Tuple, Dict, Any
+import asyncio
+from typing import Optional, Tuple, Dict, Any, List
 from backend.config import settings
 from backend.storage.memory_store import (
     store,
     CaptionSegmentModel,
     DecisionLogModel,
     SessionModel,
-    ParticipantModel
+    ParticipantModel,
+    ConversationThreadModel
 )
 from backend.fusion.dedupe import DeduplicationEngine
 from backend.fusion.overlap import OverlapDetector
 from backend.fusion.confidence import ConfidenceEstimator
 from backend.fusion.segments import SegmentTracker
+from backend.fusion.threading import thread_manager
+from backend.fusion.summarizer import rolling_summarizer
 
 class FusionEngine:
     def __init__(self):
@@ -28,9 +32,11 @@ class FusionEngine:
         asr_latency_ms: int = 150
     ) -> Tuple[Optional[CaptionSegmentModel], str, Optional[Dict[str, Any]]]:
         """
-        Processes incoming speech transcription from a device and performs evidence fusion.
-        Returns:
-            (segment, event_type, extra_event_data)
+        Processes incoming speech transcription from a device and performs evidence fusion:
+        1. In-place provisional revisions (same segmentId)
+        2. Cross-device echo deduplication & corroboration (tracks corroboratingDevices)
+        3. Simultaneous speech overlap detection (generates overlapGroupId)
+        4. Conversation thread clustering & rolling summarization
         """
         fusion_start_time = time.time()
         session = store.get_session(session_id)
@@ -45,6 +51,7 @@ class FusionEngine:
         device_label = participant.deviceLabel
         device_id = participant.deviceId
         quality_score = participant.qualityScore
+        candidate_rms = float(getattr(participant, "audioLevel", 0) * 10.0)
 
         # 1. Check for Active Provisional Segment Revision
         existing_seg_id = self.tracker.get_active_segment_id(session_id, participant_id)
@@ -89,6 +96,11 @@ class FusionEngine:
                 )
             )
 
+            # Update conversation thread
+            if updated_seg:
+                threads = thread_manager.process_segment(session_id, updated_seg, is_host=participant.isHost)
+                store.update_threads(session_id, threads)
+
             return updated_seg, event_type, None
 
         # 2. Check for Multi-Device Duplicate Echo
@@ -97,13 +109,25 @@ class FusionEngine:
             candidate_speaker_id=participant_id,
             candidate_text=text,
             candidate_start_ms=start_ms,
-            candidate_rms=participant.audioLevel * 100.0
+            candidate_rms=candidate_rms
         )
 
         if is_dup and matching_seg:
-            # Suppress duplicate echo, corroborate primary segment
+            # Multi-device corroboration: record that this device also heard the speech
             matching_seg.duplicateSourcesCount = (matching_seg.duplicateSourcesCount or 1) + 1
+            if device_label not in matching_seg.corroboratingDevices:
+                matching_seg.corroboratingDevices.append(device_label)
+            if matching_seg.sourceDeviceId not in matching_seg.corroboratingDevices:
+                matching_seg.corroboratingDevices.insert(0, matching_seg.sourceDeviceId)
+
             session.metrics.deduplicatedEvents += 1
+
+            # Multi-device corroboration grants high confidence
+            matching_seg.confidence = "high"
+
+            # If candidate text is more complete, adopt clearer verbatim text
+            if len(text) > len(matching_seg.text):
+                matching_seg.text = text
 
             elapsed_sec = (start_ms / 1000.0) if start_ms > 0 else (time.time() - (session.startedAt / 1000.0))
             store.add_decision_log(
@@ -116,10 +140,14 @@ class FusionEngine:
                     ],
                     text=f'"{text[:60]}..."' if len(text) > 60 else f'"{text}"',
                     similarity=f"{int(sim_score * 100)}%",
-                    decision=f"Duplicate echo suppressed · Retained {matching_seg.speakerName} (primary source)",
+                    decision=f"Duplicate echo suppressed · Corroborated by {len(matching_seg.corroboratingDevices)} devices (attributed to {matching_seg.speakerName})",
                     type="dedupe"
                 )
             )
+
+            # Update conversation thread
+            threads = thread_manager.process_segment(session_id, matching_seg, is_host=participant.isHost)
+            store.update_threads(session_id, threads)
 
             # Return updated matching segment with higher corroboration
             return matching_seg, "CAPTION_UPDATED", None
@@ -143,7 +171,7 @@ class FusionEngine:
                     devices=[f"{speaker_name} ({device_label})"],
                     text=f'"{text[:60]}..."' if len(text) > 60 else f'"{text}"',
                     similarity="Distinct",
-                    decision=f"Simultaneous speech detected (<{settings.OVERLAP_TIME_WINDOW_MS}ms) · Stacked overlap group",
+                    decision=f"Simultaneous speech detected (<{settings.OVERLAP_TIME_WINDOW_MS}ms) · Stacked parallel overlap card",
                     type="overlap"
                 )
             )
@@ -158,7 +186,7 @@ class FusionEngine:
             sessionId=session_id,
             speakerId=participant_id,
             speakerName=speaker_name,
-            sourceDeviceId=device_id,
+            sourceDeviceId=device_label,
             startMs=start_ms,
             endMs=end_ms,
             text=text,
@@ -166,7 +194,10 @@ class FusionEngine:
             confidence=confidence,
             overlap=has_overlap,
             overlapGroupId=group_id,
-            duplicateSourcesCount=1
+            duplicateSourcesCount=1,
+            corroboratingDevices=[device_label],
+            engine=session.activeEngine,
+            sourceQualityRms=candidate_rms
         )
 
         store.add_segment(session_id, new_segment)
@@ -181,7 +212,15 @@ class FusionEngine:
         total_lat = asr_latency_ms + fusion_lat_ms
         store.record_latency(session_id, total_lat, asr_latency_ms, fusion_lat_ms)
 
-        extra = {"overlapDetected": True, "groupId": group_id} if has_overlap else None
+        # 5. Process Conversation Threading
+        threads = thread_manager.process_segment(session_id, new_segment, is_host=participant.isHost)
+        store.update_threads(session_id, threads)
+
+        extra = {
+            "overlapDetected": has_overlap,
+            "groupId": group_id,
+            "threads": [t.model_dump() for t in threads]
+        }
         return new_segment, event_type, extra
 
 fusion_engine = FusionEngine()

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Mic } from 'lucide-react';
 import { Session, Participant, CaptionSegment, SessionMetrics } from '../types/realtime';
 import { RoomHeader } from '../components/RoomHeader';
 import { LiveTranscript } from '../components/LiveTranscript';
@@ -7,9 +8,11 @@ import { RoundtableVisualizer } from '../components/RoundtableVisualizer';
 import { LatencyIndicator } from '../components/LatencyIndicator';
 import { SessionStats } from '../components/SessionStats';
 import { JoinCodeModal } from '../components/JoinCodeModal';
+import { ConversationThreadsCard } from '../components/ConversationThreadsCard';
 import { LIVE_SIMULATION_SCRIPT } from '../lib/simulation/mockRoomData';
 import { BrowserMicrophone } from '../lib/audio/microphone';
 import { RealtimeClient } from '../lib/realtime/client';
+import { pauseSessionApi, resumeSessionApi } from '../lib/api/sessionApi';
 
 interface LiveRoomPageProps {
   session: Session;
@@ -32,6 +35,8 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [isLiveMode, setIsLiveMode] = useState(true);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [isMicStarted, setIsMicStarted] = useState(false);
+  const [micErrorMessage, setMicErrorMessage] = useState<string | null>(null);
   const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
 
   const simStepIndexRef = useRef(0);
@@ -49,6 +54,8 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
     },
     [onUpdateSession]
   );
+  const updateSessionStateRef = useRef(updateSessionState);
+  updateSessionStateRef.current = updateSessionState;
 
   // Initialize Realtime WebSocket Connection (Live Mode)
   useEffect(() => {
@@ -56,7 +63,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
 
     const client = new RealtimeClient({
       onSessionSync: (synced) => {
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...synced,
           participants: synced.participants.map((p) => ({
             ...p,
@@ -65,7 +72,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
         }));
       },
       onParticipantJoined: (newPart, connectedCount) => {
-        updateSessionState((prev) => {
+        updateSessionStateRef.current((prev) => {
           const exists = prev.participants.some((p) => p.participantId === newPart.participantId);
           const updated = exists
             ? prev.participants.map((p) => (p.participantId === newPart.participantId ? newPart : p))
@@ -78,7 +85,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
         });
       },
       onParticipantLeft: (partId, state, connectedCount) => {
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...prev,
           participants: prev.participants.map((p) =>
             p.participantId === partId ? { ...p, connectionState: state as any, audioLevel: 0 } : p
@@ -87,19 +94,25 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
         }));
       },
       onParticipantReconnected: (part, connectedCount) => {
-        updateSessionState((prev) => ({
-          ...prev,
-          participants: prev.participants.map((p) =>
-            p.participantId === part.participantId ? { ...part, connectionState: 'CONNECTED' } : p
-          ),
-          metrics: { ...prev.metrics, connectedDevices: connectedCount },
-        }));
+        updateSessionStateRef.current((prev) => {
+          const exists = prev.participants.some((p) => p.participantId === part.participantId);
+          const updated = exists
+            ? prev.participants.map((p) =>
+                p.participantId === part.participantId ? { ...part, connectionState: 'CONNECTED' } : p
+              )
+            : [...prev.participants, { ...part, connectionState: 'CONNECTED' }];
+          return {
+            ...prev,
+            participants: updated,
+            metrics: { ...prev.metrics, connectedDevices: connectedCount },
+          };
+        });
       },
       onDeviceQualityChanged: (partId, level, score, tier) => {
         if (level > 15) {
           setActiveSpeakerId(partId);
         }
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...prev,
           participants: prev.participants.map((p) =>
             p.participantId === partId ? { ...p, audioLevel: level, qualityScore: score } : p
@@ -108,7 +121,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       },
       onCaptionCreated: (segment, metrics) => {
         setActiveSpeakerId(segment.speakerId);
-        updateSessionState((prev) => {
+        updateSessionStateRef.current((prev) => {
           const exists = prev.transcriptSegments.some((s) => s.segmentId === segment.segmentId);
           return {
             ...prev,
@@ -119,7 +132,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       },
       onCaptionUpdated: (segment, metrics) => {
         setActiveSpeakerId(segment.speakerId);
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...prev,
           transcriptSegments: prev.transcriptSegments.map((s) =>
             s.segmentId === segment.segmentId ? segment : s
@@ -129,7 +142,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       },
       onCaptionFinal: (segment, metrics) => {
         setActiveSpeakerId(segment.speakerId);
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...prev,
           transcriptSegments: prev.transcriptSegments.map((s) =>
             s.segmentId === segment.segmentId ? segment : s
@@ -138,9 +151,27 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
         }));
       },
       onOverlapDetected: (groupId, speakerId, metrics) => {
-        updateSessionState((prev) => ({
+        updateSessionStateRef.current((prev) => ({
           ...prev,
           metrics: metrics || { ...prev.metrics, overlapCount: prev.metrics.overlapCount + 1 },
+        }));
+      },
+      onSessionPaused: () => {
+        updateSessionStateRef.current((prev) => ({
+          ...prev,
+          status: 'PAUSED',
+        }));
+      },
+      onSessionResumed: () => {
+        updateSessionStateRef.current((prev) => ({
+          ...prev,
+          status: 'LIVE',
+        }));
+      },
+      onConversationThreadsUpdated: (threads) => {
+        updateSessionStateRef.current((prev) => ({
+          ...prev,
+          threads,
         }));
       },
     });
@@ -152,22 +183,45 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
       client.disconnect();
       realtimeClientRef.current = null;
     };
-  }, [isLiveMode, session.sessionId, localParticipant?.participantId, updateSessionState]);
+  }, [isLiveMode, session.sessionId, localParticipant?.participantId]);
 
-  // Real Hardware Microphone Pipeline
-  useEffect(() => {
-    if (!isLiveMode) return;
+  // Keep refs for changing state so audio graph is never recreated every second
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
+
+  const sessionStatusRef = useRef(session.status);
+  sessionStatusRef.current = session.status;
+
+  const elapsedSecondsRef = useRef(elapsedSeconds);
+  elapsedSecondsRef.current = elapsedSeconds;
+
+  const localParticipantRef = useRef(localParticipant);
+  localParticipantRef.current = localParticipant;
+
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+
+  // Dedicated microphone startup with error diagnosis and user gesture support
+  const startMicrophone = useCallback(async () => {
+    if (micRef.current && micRef.current.isListening()) {
+      setIsMicStarted(true);
+      setMicErrorMessage(null);
+      return true;
+    }
 
     const mic = new BrowserMicrophone();
-    mic.start(
+    micRef.current = mic;
+
+    const ok = await mic.start(
       (pcm16Chunk) => {
-        if (!isMuted && realtimeClientRef.current) {
+        // Stream audio chunk only if active and not paused
+        if (!isMutedRef.current && sessionStatusRef.current === 'LIVE' && realtimeClientRef.current) {
           realtimeClientRef.current.sendAudioChunk(pcm16Chunk);
         }
       },
       (spokenText, isFinal) => {
-        if (!isMuted && spokenText.trim()) {
-          const speaker = localParticipant || session.participants[0] || {
+        if (!isMutedRef.current && sessionStatusRef.current === 'LIVE' && spokenText.trim()) {
+          const speaker = localParticipantRef.current || sessionRef.current.participants[0] || {
             participantId: 'p-local',
             displayName: 'You',
             deviceId: 'local-mic',
@@ -178,9 +232,9 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
             realtimeClientRef.current.sendSpeechText(spokenText, isFinal);
           }
 
-          // Immediate local caption creation / revision
-          const nowMs = elapsedSeconds * 1000;
-          updateSessionState((prev) => {
+          // Emergency local browser fallback caption labeled as LOCAL_FALLBACK
+          const nowMs = elapsedSecondsRef.current * 1000;
+          updateSessionStateRef.current((prev) => {
             const existingIdx = prev.transcriptSegments.findIndex(
               (s) => s.speakerId === speaker.participantId && s.status === 'PROVISIONAL'
             );
@@ -200,7 +254,7 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
               };
             } else {
               const newSegment: CaptionSegment = {
-                segmentId: `live-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+                segmentId: `local-fb-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
                 sessionId: prev.sessionId,
                 speakerId: speaker.participantId,
                 speakerName: speaker.displayName,
@@ -209,8 +263,9 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
                 endMs: nowMs + 2000,
                 text: spokenText.trim(),
                 status: isFinal ? 'FINAL' : 'PROVISIONAL',
-                confidence: 'high',
+                confidence: 'medium',
                 overlap: false,
+                engine: 'LOCAL_FALLBACK',
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
                 duplicateSourcesCount: 1,
@@ -227,30 +282,63 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
           });
         }
       }
-    ).then((ok) => {
-      if (ok) {
-        const interval = setInterval(() => {
-          if (!isMuted && micRef.current) {
-            const level = micRef.current.getAudioLevel();
-            if (level > 15 && localParticipant) {
-              setActiveSpeakerId(localParticipant.participantId);
-            }
-          }
-        }, 120);
-        return () => clearInterval(interval);
-      }
-    });
+    );
+
+    if (ok) {
+      setIsMicStarted(true);
+      setMicErrorMessage(null);
+      return true;
+    } else {
+      setIsMicStarted(false);
+      const err = mic.getError() || 'Microphone access denied or unavailable.';
+      setMicErrorMessage(err);
+      console.warn('[Roundtable LiveRoom] Microphone start notice:', err);
+      return false;
+    }
+  }, []);
+
+  // Real Hardware Microphone Pipeline: Start once on mount, clean up only on unmount
+  useEffect(() => {
+    if (!isLiveMode) return;
+
+    startMicrophone();
 
     return () => {
-      mic.stop();
-      micRef.current = null;
+      if (micRef.current) {
+        micRef.current.stop();
+        micRef.current = null;
+      }
+      setIsMicStarted(false);
     };
-  }, [isLiveMode, isMuted, localParticipant]);
+  }, [isLiveMode, startMicrophone]);
 
-  // Handle Mute / Unmute
-  const handleToggleLocalMute = () => {
+  // Dedicated audio level meter polling effect
+  useEffect(() => {
+    if (!isLiveMode) return;
+
+    const interval = setInterval(() => {
+      if (!isMutedRef.current && sessionStatusRef.current === 'LIVE' && micRef.current && micRef.current.isListening()) {
+        const level = micRef.current.getAudioLevel();
+        if (level > 15 && localParticipantRef.current) {
+          setActiveSpeakerId(localParticipantRef.current.participantId);
+        }
+      }
+    }, 120);
+
+    return () => clearInterval(interval);
+  }, [isLiveMode]);
+
+  // Handle Mute / Unmute / Start
+  const handleToggleLocalMute = async () => {
+    if (!isMicStarted || !micRef.current) {
+      // Direct user click provides the gesture needed by Chrome/Safari to ask for permission
+      const ok = await startMicrophone();
+      if (!ok) return;
+    }
+
     const nextMuted = !isMuted;
     setIsMuted(nextMuted);
+    isMutedRef.current = nextMuted;
 
     if (micRef.current) {
       if (nextMuted) {
@@ -410,12 +498,31 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
     }
   };
 
-  const handleTogglePause = () => {
-    const nextStatus = session.status === 'LIVE' ? 'PAUSED' : 'LIVE';
-    updateSessionState((prev) => ({
-      ...prev,
-      status: nextStatus,
-    }));
+  const handleTogglePause = async () => {
+    const isPaused = session.status === 'PAUSED';
+    if (isPaused) {
+      realtimeClientRef.current?.sendResumeSession();
+      try {
+        await resumeSessionApi(session.sessionId);
+      } catch (err) {
+        console.warn('Resume API notice:', err);
+      }
+      updateSessionState((prev) => ({
+        ...prev,
+        status: 'LIVE',
+      }));
+    } else {
+      realtimeClientRef.current?.sendPauseSession();
+      try {
+        await pauseSessionApi(session.sessionId);
+      } catch (err) {
+        console.warn('Pause API notice:', err);
+      }
+      updateSessionState((prev) => ({
+        ...prev,
+        status: 'PAUSED',
+      }));
+    }
   };
 
   const handleToggleParticipantMute = (participantId: string) => {
@@ -612,6 +719,33 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
               <SessionStats metrics={session.metrics} />
             </div>
 
+            {/* Microphone Permission Banner if not active */}
+            {!isMicStarted && (
+              <div className="bg-[#315C4C] text-[#FFF8E8] p-3.5 rounded-lg shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border border-[#27493C] animate-fade-in">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-[#FFF8E8]/20 flex items-center justify-center shrink-0">
+                    <Mic className="w-4 h-4 text-[#FFF8E8]" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider">
+                      Microphone Permission Required
+                    </h4>
+                    <p className="text-[11px] text-[#FFF8E8]/90 mt-0.5">
+                      {micErrorMessage || 'Click below to grant microphone access so Roundtable can transcribe your speech in real time.'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={startMicrophone}
+                  className="px-4 py-2 bg-[#FFF8E8] text-[#315C4C] font-bold text-xs rounded-md shadow-xs hover:bg-[#FFEDBF] transition-all shrink-0 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Mic className="w-3.5 h-3.5" />
+                  Enable Microphone
+                </button>
+              </div>
+            )}
+
             {/* Live Transcript Container */}
             <div className="min-h-[500px] h-[580px]">
               <LiveTranscript
@@ -649,6 +783,9 @@ export const LiveRoomPage: React.FC<LiveRoomPageProps> = ({
               onInviteClick={() => setIsShareModalOpen(true)}
               onSimulateJoin={handleSimulateJoin}
             />
+
+            {/* Concurrent Side Conversations & Rolling Summaries */}
+            <ConversationThreadsCard threads={session.threads} />
           </div>
         </div>
       </div>

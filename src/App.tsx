@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Navigation, ViewType } from './components/Navigation';
 import { LandingPage } from './pages/LandingPage';
 import { CreateSessionPage } from './pages/CreateSessionPage';
@@ -15,12 +15,70 @@ import { Session, Participant } from './types/realtime';
 import { createSessionApi, joinSessionApi, stopSessionApi, getSessionApi } from './lib/api/sessionApi';
 
 const STORAGE_KEY_PREVIOUS_SESSIONS = 'roundtable_previous_sessions';
+const STORAGE_KEY_ACTIVE_SESSION = 'roundtable_active_session';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState<ViewType>('landing');
-  const [session, setSession] = useState<Session | null>(null);
-  const [joinCodeParam, setJoinCodeParam] = useState<string>('');
-  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  // Lazy state initializers: immediately restore active session on refresh without flashing landing
+  const [session, setSession] = useState<Session | null>(() => {
+    try {
+      const activeRaw = localStorage.getItem(STORAGE_KEY_ACTIVE_SESSION);
+      if (activeRaw) {
+        const parsed: Session = JSON.parse(activeRaw);
+        if (parsed && parsed.sessionId && parsed.status !== 'STOPPED') {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('Failed restoring active session from localStorage:', err);
+    }
+    return null;
+  });
+
+  const [currentView, setCurrentView] = useState<ViewType>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get('room');
+      const activeRaw = localStorage.getItem(STORAGE_KEY_ACTIVE_SESSION);
+      if (activeRaw) {
+        const parsed: Session = JSON.parse(activeRaw);
+        if (parsed && parsed.sessionId && parsed.status !== 'STOPPED') {
+          if (!roomParam || roomParam.toUpperCase() === parsed.joinCode?.toUpperCase()) {
+            return 'room';
+          }
+        }
+      }
+      if (roomParam) {
+        return 'join';
+      }
+    } catch (err) {
+      console.warn('Failed calculating initial view:', err);
+    }
+    return 'landing';
+  });
+
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(() => {
+    try {
+      const activeRaw = localStorage.getItem(STORAGE_KEY_ACTIVE_SESSION);
+      if (activeRaw) {
+        const parsed: Session = JSON.parse(activeRaw);
+        const startTime = parsed.startedAt || parsed.createdAt;
+        if (startTime) {
+          return Math.max(0, Math.floor((Date.now() - startTime) / 1000));
+        }
+      }
+    } catch {}
+    return 0;
+  });
+
+  const [joinCodeParam, setJoinCodeParam] = useState<string>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('room')?.toUpperCase() || '';
+    } catch {
+      return '';
+    }
+  });
+
   const [historyInspectSession, setHistoryInspectSession] = useState<Session | null>(null);
 
   // Manage archived/previous sessions from localStorage
@@ -46,25 +104,65 @@ export default function App() {
     }
   };
 
-  // Check URL params for joining rooms
+  // URL synchronization and background state verification on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const roomParam = params.get('room');
-    if (roomParam) {
+
+    if (session && session.joinCode && session.status !== 'STOPPED') {
+      // Keep ?room=CODE in URL so bookmarks / refresh stay synced
+      if (!roomParam || roomParam.toUpperCase() !== session.joinCode.toUpperCase()) {
+        const newUrl = `${window.location.pathname}?room=${session.joinCode}`;
+        window.history.replaceState({}, '', newUrl);
+      }
+
+      // Re-fetch backend session to ensure participants and transcripts are synced
+      getSessionApi(session.sessionId)
+        .then((serverSession) => {
+          if (serverSession && serverSession.status !== 'STOPPED') {
+            setSession((prev) => {
+              if (!prev) return serverSession;
+              const localId = prev.participants.find((p) => p.isLocal)?.participantId;
+              return {
+                ...serverSession,
+                participants: serverSession.participants.map((p) => ({
+                  ...p,
+                  isLocal: p.participantId === localId,
+                })),
+              };
+            });
+          } else if (serverSession && serverSession.status === 'STOPPED') {
+            localStorage.removeItem(STORAGE_KEY_ACTIVE_SESSION);
+            setCurrentView('evaluate');
+          }
+        })
+        .catch(() => {
+          // Keep active local session if backend temporarily unreachable
+        });
+    } else if (roomParam) {
       const code = roomParam.toUpperCase();
       setJoinCodeParam(code);
       setCurrentView('join');
-      // Attempt fetching session info from backend
       getSessionApi(code)
         .then((s) => {
           if (s) setSession(s);
         })
-        .catch(() => {
-          // ignore if backend not reachable yet
-        });
+        .catch(() => {});
     }
-    // Clean initial load: No default running session
   }, []);
+
+  // Persist active session state to localStorage on every change
+  useEffect(() => {
+    if (session && session.status !== 'STOPPED') {
+      try {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_SESSION, JSON.stringify(session));
+      } catch (e) {
+        console.warn('Failed saving active session:', e);
+      }
+    } else if (session && session.status === 'STOPPED') {
+      localStorage.removeItem(STORAGE_KEY_ACTIVE_SESSION);
+    }
+  }, [session]);
 
   // Live timer interval
   useEffect(() => {
@@ -239,6 +337,9 @@ export default function App() {
 
   // Conclude active session (Host action)
   const handleEndSession = async () => {
+    localStorage.removeItem(STORAGE_KEY_ACTIVE_SESSION);
+    window.history.replaceState({}, '', window.location.pathname);
+
     if (session) {
       try {
         await stopSessionApi(session.sessionId);
@@ -258,15 +359,18 @@ export default function App() {
       ];
       savePreviousSessions(updatedHistory);
 
-      // Remove from active live room sections
-      setSession(null);
+      // Preserve concluded session as the active evaluation snapshot
+      setSession(stoppedSession);
+      setHistoryInspectSession(stoppedSession);
     }
-    // Navigate cleanly to history view to see details of concluded session
-    setCurrentView('history');
+    // Navigate directly to evaluation view for the concluded session
+    setCurrentView('evaluate');
   };
 
   // Leave active session (Guest action)
   const handleLeaveSession = () => {
+    localStorage.removeItem(STORAGE_KEY_ACTIVE_SESSION);
+    window.history.replaceState({}, '', window.location.pathname);
     setSession(null);
     setCurrentView('landing');
   };
@@ -275,8 +379,8 @@ export default function App() {
     savePreviousSessions([]);
   };
 
-  // Support functional state updater from LiveRoomPage
-  const handleUpdateSession = (updater: Session | ((prev: Session) => Session)) => {
+  // Stable functional state updater from LiveRoomPage (guarantees zero effect churn)
+  const handleUpdateSession = useCallback((updater: Session | ((prev: Session) => Session)) => {
     setSession((prev) => {
       if (!prev) return null;
       if (typeof updater === 'function') {
@@ -284,7 +388,7 @@ export default function App() {
       }
       return updater;
     });
-  };
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#FFEDBF] text-[#1E1B16]">
@@ -340,9 +444,9 @@ export default function App() {
           <EvaluatePage
             session={session || historyInspectSession}
             onBack={() => {
-              if (session && session.status === 'LIVE') {
+              if (session && (session.status === 'LIVE' || session.status === 'PAUSED')) {
                 setCurrentView('room');
-              } else if (historyInspectSession) {
+              } else if (historyInspectSession || (session && session.status === 'STOPPED')) {
                 setCurrentView('history');
               } else {
                 setCurrentView('landing');

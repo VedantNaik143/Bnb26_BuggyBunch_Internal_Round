@@ -81,17 +81,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
               </form>
-
-              {onViewHistory && (
-                <button
-                  onClick={onViewHistory}
-                  className="px-4 py-3.5 rounded-md border border-[#D8CCAF] bg-[#FFF8E8] text-[#1E1B16] font-semibold text-sm hover:bg-[#FFEDBF]/60 transition-colors flex items-center justify-center gap-2 shadow-2xs cursor-pointer"
-                  title="View concluded sessions and transcripts"
-                >
-                  <History className="w-4 h-4 text-[#315C4C]" />
-                  Previous Sessions
-                </button>
-              )}
             </div>
 
             {/* Quiet metadata notes */}
@@ -258,11 +247,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             <button onClick={() => onJoinSession()} className="hover:text-[#1E1B16] cursor-pointer">
               Join by Code
             </button>
-            {onViewHistory && (
-              <button onClick={onViewHistory} className="hover:text-[#1E1B16] cursor-pointer">
-                Previous Sessions
-              </button>
-            )}
             <button onClick={onViewEvaluation} className="hover:text-[#1E1B16] cursor-pointer">
               Evaluation
             </button>

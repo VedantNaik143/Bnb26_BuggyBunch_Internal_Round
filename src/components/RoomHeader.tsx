@@ -46,6 +46,21 @@ export const RoomHeader: React.FC<RoomHeaderProps> = ({
               {session.status}
             </span>
 
+            {/* Active Engine Badge */}
+            {isLiveMode && (
+              <>
+                <span aria-hidden="true" className="text-[#D8CCAF]">
+                  ·
+                </span>
+                <span
+                  className="font-mono text-[10px] font-semibold px-2 py-0.5 rounded bg-[#315C4C]/10 text-[#315C4C] border border-[#315C4C]/30"
+                  title="Backend Gemini Live transcription stream active per acoustic source"
+                >
+                  ENGINE: {session.activeEngine || 'GEMINI LIVE'}
+                </span>
+              </>
+            )}
+
             <span aria-hidden="true" className="text-[#D8CCAF]">
               ·
             </span>

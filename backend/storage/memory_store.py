@@ -38,7 +38,21 @@ class CaptionSegmentModel(BaseModel):
     createdAt: int = Field(default_factory=lambda: int(time.time() * 1000))
     updatedAt: int = Field(default_factory=lambda: int(time.time() * 1000))
     duplicateSourcesCount: int = 1
+    corroboratingDevices: List[str] = Field(default_factory=list)
+    engine: str = "GEMINI_LIVE"
     sourceQualityRms: float = 0.0
+
+class ConversationThreadModel(BaseModel):
+    threadId: str
+    threadType: str = "MAIN_CONVERSATION"  # MAIN_CONVERSATION, SIDE_CONVERSATION, OVERLAP, UNKNOWN
+    speakerIds: List[str] = Field(default_factory=list)
+    speakerNames: List[str] = Field(default_factory=list)
+    startTime: int = Field(default_factory=lambda: int(time.time() * 1000))
+    lastUpdate: int = Field(default_factory=lambda: int(time.time() * 1000))
+    recentSegments: List[CaptionSegmentModel] = Field(default_factory=list)
+    topic: str = "General Discussion"
+    summary: str = ""
+    confidence: str = "high"
 
 class DecisionLogModel(BaseModel):
     time: str
@@ -70,8 +84,10 @@ class SessionModel(BaseModel):
     status: str = "LIVE"  # WAITING, LIVE, PAUSED, STOPPED
     participants: List[ParticipantModel] = Field(default_factory=list)
     transcriptSegments: List[CaptionSegmentModel] = Field(default_factory=list)
+    threads: List[ConversationThreadModel] = Field(default_factory=list)
     metrics: SessionMetricsModel = Field(default_factory=SessionMetricsModel)
     decisionLogs: List[DecisionLogModel] = Field(default_factory=list)
+    activeEngine: str = "GEMINI_LIVE"
 
 class MemoryStore:
     def __init__(self):
@@ -263,5 +279,31 @@ class MemoryStore:
             m.asrLatencyMs = asr_latency_ms
         if fusion_latency_ms > 0:
             m.fusionLatencyMs = fusion_latency_ms
+
+    def pause_session(self, session_id: str) -> Optional[SessionModel]:
+        session = self.get_session(session_id)
+        if session:
+            session.status = "PAUSED"
+            return session
+        return None
+
+    def resume_session(self, session_id: str) -> Optional[SessionModel]:
+        session = self.get_session(session_id)
+        if session:
+            session.status = "LIVE"
+            return session
+        return None
+
+    def stop_session(self, session_id: str) -> Optional[SessionModel]:
+        session = self.get_session(session_id)
+        if session:
+            session.status = "STOPPED"
+            return session
+        return None
+
+    def update_threads(self, session_id: str, threads: List[ConversationThreadModel]):
+        session = self.get_session(session_id)
+        if session:
+            session.threads = threads
 
 store = MemoryStore()

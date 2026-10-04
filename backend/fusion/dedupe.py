@@ -6,11 +6,23 @@ from backend.storage.memory_store import CaptionSegmentModel, SessionModel
 class DeduplicationEngine:
     @staticmethod
     def calculate_similarity(text_a: str, text_b: str) -> float:
-        """Computes character and token similarity using difflib SequenceMatcher."""
+        """Computes character and token similarity using difflib and token containment."""
         if not text_a or not text_b:
             return 0.0
-        matcher = difflib.SequenceMatcher(None, text_a.lower().strip(), text_b.lower().strip())
-        return matcher.ratio()
+        a_clean = text_a.lower().strip()
+        b_clean = text_b.lower().strip()
+        ratio = difflib.SequenceMatcher(None, a_clean, b_clean).ratio()
+
+        words_a = set(a_clean.split())
+        words_b = set(b_clean.split())
+        if words_a and words_b:
+            intersection = words_a.intersection(words_b)
+            # Token overlap relative to the shorter sentence
+            containment = len(intersection) / min(len(words_a), len(words_b))
+            if containment >= 0.70:
+                return max(ratio, containment * 0.95)
+
+        return ratio
 
     @classmethod
     def check_duplicate(

@@ -97,7 +97,7 @@ export const ParticipantCard: React.FC<ParticipantCardProps> = ({
           ) : isTemporarilyLost ? (
             <span className="flex items-center gap-1 text-[#A65A32] font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-[#A65A32] animate-ping" />
-              ○ Reconnecting...
+              ○ Temporarily lost
             </span>
           ) : (
             <span className="flex items-center gap-1 text-[#9A3D35] font-medium">
