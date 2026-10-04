@@ -127,6 +127,15 @@ async def get_evaluation_data(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     
     m = session.metrics
+    total_obs = m.speechEvents + m.deduplicatedEvents
+    dedup_eff_pct = round((m.deduplicatedEvents / total_obs) * 100.0, 1) if total_obs > 0 else 0.0
+
+    device_quality_breakdown = {
+        "good": len([p for p in session.participants if p.qualityScore >= 85]),
+        "fair": len([p for p in session.participants if 65 <= p.qualityScore < 85]),
+        "poor": len([p for p in session.participants if p.qualityScore < 65])
+    }
+
     return {
         "sessionId": session.sessionId,
         "sessionName": session.name,
@@ -136,8 +145,10 @@ async def get_evaluation_data(session_id: str):
         "methodology": {
             "mode": "Roundtable Acoustic Fusion Mesh",
             "participantsMeasured": len(session.participants),
+            "deviceQualityBreakdown": device_quality_breakdown,
             "totalSpeechEvents": m.speechEvents,
             "deduplicationCount": m.deduplicatedEvents,
+            "deduplicationEfficiencyPercent": f"{dedup_eff_pct}%" if total_obs > 0 else "0.0%",
             "overlapCount": m.overlapCount,
             "measuredMedianLatencyMs": m.medianLatencyMs or "Not measured",
             "measuredP95LatencyMs": m.p95LatencyMs or "Not measured"

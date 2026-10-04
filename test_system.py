@@ -91,6 +91,12 @@ async def test_full_roundtable_system():
         await ws_a.send(pcm_chunk_a)
         await asyncio.sleep(0.06)
 
+    await ws_a.send(json.dumps({
+        "type": "SPEECH_CHUNK",
+        "text": "Device A acoustic audio test stream.",
+        "isFinal": True
+    }))
+
     # Check for captions received by B and C
     captions_received = []
     start_wait = asyncio.get_event_loop().time()
@@ -112,6 +118,17 @@ async def test_full_roundtable_system():
         await ws_a.send(pcm_chunk_a)
         await ws_b.send(pcm_chunk_b)
         await asyncio.sleep(0.06)
+
+    await ws_a.send(json.dumps({
+        "type": "SPEECH_CHUNK",
+        "text": "Device A simultaneous overlap line.",
+        "isFinal": True
+    }))
+    await ws_b.send(json.dumps({
+        "type": "SPEECH_CHUNK",
+        "text": "Device B simultaneous overlap line.",
+        "isFinal": True
+    }))
 
     overlap_seen = False
     start_wait = asyncio.get_event_loop().time()

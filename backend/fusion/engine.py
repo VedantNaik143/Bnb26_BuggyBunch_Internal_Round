@@ -114,16 +114,25 @@ class FusionEngine:
 
         if is_dup and matching_seg:
             # Multi-device corroboration: record that this device also heard the speech
-            matching_seg.duplicateSourcesCount = (matching_seg.duplicateSourcesCount or 1) + 1
             if device_label not in matching_seg.corroboratingDevices:
                 matching_seg.corroboratingDevices.append(device_label)
             if matching_seg.sourceDeviceId not in matching_seg.corroboratingDevices:
                 matching_seg.corroboratingDevices.insert(0, matching_seg.sourceDeviceId)
 
+            # Synchronize count strictly with unique corroborating devices
+            matching_seg.duplicateSourcesCount = len(matching_seg.corroboratingDevices)
             session.metrics.deduplicatedEvents += 1
 
             # Multi-device corroboration grants high confidence
             matching_seg.confidence = "high"
+
+            # RMS-based re-attribution: if candidate observation is meaningfully stronger (candidate RMS > existing RMS + 5.0)
+            existing_rms = float(matching_seg.sourceQualityRms or 0.0)
+            if candidate_rms > (existing_rms + 5.0):
+                matching_seg.speakerId = participant_id
+                matching_seg.speakerName = speaker_name
+                matching_seg.sourceDeviceId = device_label
+                matching_seg.sourceQualityRms = candidate_rms
 
             # If candidate text is more complete, adopt clearer verbatim text
             if len(text) > len(matching_seg.text):
@@ -140,7 +149,7 @@ class FusionEngine:
                     ],
                     text=f'"{text[:60]}..."' if len(text) > 60 else f'"{text}"',
                     similarity=f"{int(sim_score * 100)}%",
-                    decision=f"Duplicate echo suppressed · Corroborated by {len(matching_seg.corroboratingDevices)} devices (attributed to {matching_seg.speakerName})",
+                    decision=f"Duplicate echo suppressed · Corroborated by {matching_seg.duplicateSourcesCount} devices (attributed to {matching_seg.speakerName})",
                     type="dedupe"
                 )
             )
